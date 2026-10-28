@@ -34,6 +34,8 @@ import FluxerStatsService from './services/statsService/FluxerStatsService';
 import DiscordStatsService from './services/statsService/DiscordStatsService';
 import StatsDiscordCommandHandler from './commands/discord/handlers/StatsDiscordCommandHandler';
 import { DbStatsService } from './services/DbStatsService';
+import EmojiMapper from './services/emojiMapping/EmojiMapper';
+import BridgeLogService from './services/BridgeLogService';
 
 const startDiscordClient = async ({
     linkService,
@@ -46,6 +48,8 @@ const startDiscordClient = async ({
     discordStatsService,
     fluxerStatsService,
     dbStatsService,
+    emojiMapper,
+    bridgeLogService,
 }: {
     linkService: LinkService;
     webhookService: WebhookService;
@@ -57,6 +61,8 @@ const startDiscordClient = async ({
     discordStatsService: DiscordStatsService;
     fluxerStatsService: FluxerStatsService;
     dbStatsService: DbStatsService;
+    emojiMapper: EmojiMapper;
+    bridgeLogService: BridgeLogService;
 }): Promise<Client> => {
     const client = new Client({
         intents: [
@@ -80,8 +86,9 @@ const startDiscordClient = async ({
     healthCheckService.setDiscordClient(client);
     discordEntityResolver.setDiscordClient(client);
     discordStatsService.setClient(client);
+    bridgeLogService.setDiscordClient(client);
 
-    const messageTransformer = new DiscordMessageTransformer();
+    const messageTransformer = new DiscordMessageTransformer(emojiMapper);
     const messageRelay = new DiscordToFluxerMessageRelay({
         linkService,
         webhookService,

@@ -10,6 +10,8 @@ export default class MetricsService {
     public readonly healthPingMs: Gauge<'bot'>;
     public readonly messagesRelayed: Counter<'direction'>;
     public readonly messageRelayErrors: Counter<'direction'>;
+    public readonly syncEvents: Counter<'kind' | 'direction' | 'result'>;
+    public readonly syncEchoSuppressed: Counter<'kind'>;
 
     constructor(port: number) {
         this.registry = new Registry();
@@ -45,6 +47,20 @@ export default class MetricsService {
             name: 'bifrost_message_relay_errors_total',
             help: 'Total number of message relay errors',
             labelNames: ['direction'],
+            registers: [this.registry],
+        });
+
+        this.syncEvents = new Counter({
+            name: 'bifrost_sync_events_total',
+            help: 'Total number of mirrored sync events',
+            labelNames: ['kind', 'direction', 'result'],
+            registers: [this.registry],
+        });
+
+        this.syncEchoSuppressed = new Counter({
+            name: 'bifrost_sync_echo_suppressed_total',
+            help: 'Total number of sync events suppressed as echoes of our own mirror actions',
+            labelNames: ['kind'],
             registers: [this.registry],
         });
 

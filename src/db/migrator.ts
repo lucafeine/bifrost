@@ -7,7 +7,14 @@ import logger from '../utils/logging/logger';
 const storage = new SequelizeStorage({ sequelize });
 
 const umzug = new Umzug({
-    migrations: { glob: path.join(__dirname, 'migrations', '*.js') },
+    migrations: {
+        // `*.js` under the compiled output, `*.ts` when run through tsx.
+        // Forward slashes: glob treats backslashes as escapes on Windows.
+        glob: [
+            path.join(__dirname, 'migrations', '*.{js,ts}').replace(/\\/g, '/'),
+            { ignore: '**/*.d.ts' },
+        ],
+    },
     context: sequelize.getQueryInterface(),
     storage,
     logger: undefined,

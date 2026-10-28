@@ -1,18 +1,19 @@
-import { emojiToString, GeneralEmoji, replaceEmojis } from '../../utils/emojis';
+import EmojiMapper from '../emojiMapping/EmojiMapper';
+import { GeneralEmoji } from '../../utils/emojis';
 
 export default abstract class MessageTransformer<SourceMessage, TargetMessage> {
+    protected readonly emojiMapper: EmojiMapper;
+
+    constructor(emojiMapper?: EmojiMapper) {
+        this.emojiMapper = emojiMapper ?? new EmojiMapper();
+    }
+
     abstract transformMessage(
         message: SourceMessage,
         otherEmojis?: GeneralEmoji[]
     ): Promise<TargetMessage>;
 
     protected replaceEmojis(content: string, emojis: GeneralEmoji[]): string {
-        return replaceEmojis(content, (emoji) => {
-            const matchingEmoji = emojis.find((e) => e.name === emoji.name);
-            if (matchingEmoji) {
-                return `<${matchingEmoji.animated ? 'a' : ''}:${matchingEmoji.name}:${matchingEmoji.id}>`;
-            }
-            return emojiToString(emoji);
-        });
+        return this.emojiMapper.mapContent(content, emojis);
     }
 }

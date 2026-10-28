@@ -1,7 +1,20 @@
 import { GuildLinkModel } from './GuildLinkModel';
+import { GuildLinkSettingsModel } from './GuildLinkSettingsModel';
 import { ChannelLinkModel } from './ChannelLinkModel';
 import { MessageLinkModel } from './MessageLinkModel';
 import { QueuedMessageModel } from './QueuedMessageModel';
+
+// Guild -> Settings
+GuildLinkModel.hasOne(GuildLinkSettingsModel, {
+    foreignKey: 'guildLinkId',
+    as: 'settings',
+    onDelete: 'CASCADE',
+});
+
+GuildLinkSettingsModel.belongsTo(GuildLinkModel, {
+    foreignKey: 'guildLinkId',
+    as: 'guildLink',
+});
 
 // Guild -> Channel
 GuildLinkModel.hasMany(ChannelLinkModel, {
@@ -41,6 +54,7 @@ MessageLinkModel.belongsTo(ChannelLinkModel, {
 
 export {
     GuildLinkModel,
+    GuildLinkSettingsModel,
     ChannelLinkModel,
     MessageLinkModel,
     QueuedMessageModel,

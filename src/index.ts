@@ -1,14 +1,18 @@
 import { CachedChannelLinkRepository } from './db/cachedrepos/CachedChannelLinkRepository';
 import { CachedGuildLinkRepository } from './db/cachedrepos/CachedGuildLinkRepository';
+import { CachedGuildLinkSettingsRepository } from './db/cachedrepos/CachedGuildLinkSettingsRepository';
 import { CachedMessageLinkRepository } from './db/cachedrepos/CachedMessageLinkRepository';
 import { initDatabase } from './db/migrator';
 import { SequelizeChannelLinkRepository } from './db/sequelizerepos/SequelizeChannelLinkRepository';
 import { SequelizeGuildLinkRepository } from './db/sequelizerepos/SequelizeGuildLinkRepository';
+import { SequelizeGuildLinkSettingsRepository } from './db/sequelizerepos/SequelizeGuildLinkSettingsRepository';
 import { SequelizeMessageLinkRepository } from './db/sequelizerepos/SequelizeMessageLinkRepository';
 import startDiscordClient from './discord';
 import type { Client as FluxerClient } from '@fluxerjs/core';
 import startFluxerClient from './fluxer';
 import { DbStatsService } from './services/DbStatsService';
+import BridgeLogService from './services/BridgeLogService';
+import EmojiMapper from './services/emojiMapping/EmojiMapper';
 import FluxerEntityResolver from './services/entityResolver/FluxerEntityResolver';
 import DiscordEntityResolver from './services/entityResolver/DiscordEntityResolver';
 import HealthCheckService from './services/HealthCheckService';
@@ -61,10 +65,15 @@ const main = async () => {
     healthCheckService.setMetricsService(metricsService);
 
     const guildLinkRepo = new SequelizeGuildLinkRepository();
+    const guildLinkSettingsRepo = new SequelizeGuildLinkSettingsRepository();
     const channelLinkRepo = new SequelizeChannelLinkRepository();
     const messageLinkRepo = new SequelizeMessageLinkRepository();
 
     const cachedGuildLinkRepo = new CachedGuildLinkRepository(guildLinkRepo, 0);
+    const cachedGuildLinkSettingsRepo = new CachedGuildLinkSettingsRepository(
+        guildLinkSettingsRepo,
+        30
+    );
     const cachedChannelLinkRepo = new CachedChannelLinkRepository(
         channelLinkRepo,
         0
@@ -82,6 +91,11 @@ const main = async () => {
     const webhookService = new WebhookService();
     const discordEntityResolver = new DiscordEntityResolver();
     const fluxerEntityResolver = new FluxerEntityResolver();
+    const emojiMapper = new EmojiMapper({
+        discordDirectory: discordEntityResolver,
+        fluxerDirectory: fluxerEntityResolver,
+    });
+    const bridgeLogService = new BridgeLogService(cachedGuildLinkSettingsRepo);
     const discordStatsService = new DiscordStatsService();
     const fluxerStatsService = new FluxerStatsService();
     const dbStatsService = new DbStatsService(
@@ -104,6 +118,8 @@ const main = async () => {
         discordStatsService,
         fluxerStatsService,
         dbStatsService,
+        emojiMapper,
+        bridgeLogService,
     };
 
     const fluxerClientRef: { current: FluxerClient | null } = { current: null };
@@ -211,6 +227,8 @@ const main = async () => {
             discordStatsService,
             fluxerStatsService,
             dbStatsService,
+            emojiMapper,
+            bridgeLogService,
         }),
         connectFluxer(),
     ]);
