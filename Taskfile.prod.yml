@@ -20,3 +20,18 @@ tasks:
         desc: Remove build output for the bot and the dashboard
         cmds:
             - rm -rf dist dashboard/dist
+
+    docker:build:
+        desc: Build the local Docker image from source
+        cmds:
+            - docker compose -f docker-compose-build.yml build
+
+    docker:up:
+        desc: Build and (re)start the stack with the locally built image
+        cmds:
+            - docker compose -f docker-compose-build.yml up -d --build
+
+    docker:logs:
+        desc: Follow the bot logs from the locally built stack
+        cmds:
+            - docker compose -f docker-compose-build.yml logs -f bifrost

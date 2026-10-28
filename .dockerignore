@@ -5,4 +5,7 @@ dist
 Dockerfile
 config
 .idea
-docs
+.github
+docker-compose*.yml
+Taskfile*.yml
+README.md

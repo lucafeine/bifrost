@@ -1,0 +1,27 @@
+# Build Bifröst from source instead of pulling the official image.
+#
+#   docker compose -f docker-compose-build.yml up -d --build
+#
+# Optional build metadata (GIT_COMMIT and REPO_URL are shown in `!b stats`):
+#
+#   GIT_COMMIT=$(git rev-parse --short HEAD) \
+#   REPO_URL=https://github.com/lucafeine/bifrost \
+#   docker compose -f docker-compose-build.yml up -d --build
+services:
+    bifrost:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            args:
+                GIT_COMMIT: ${GIT_COMMIT:-local}
+                REPO_URL: ${REPO_URL:-}
+                APP_VERSION: ${APP_VERSION:-local}
+        image: bifrost:local
+        container_name: bifrost
+        restart: unless-stopped
+        #ports:
+        #    - '9092:9092'
+        env_file:
+            - .env
+        volumes:
+            - ./config:/config
