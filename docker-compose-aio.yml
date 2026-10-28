@@ -11,12 +11,12 @@ services:
         env_file:
             - .env
         environment:
-            DB_DIALECT: postgres
-            DB_HOST: postgres
-            DB_PORT: 5432
-            DB_NAME: bifrost
-            DB_USER: bifrost_user
-            DB_PASS: ${POSTGRES_PASSWORD}
+            BF_DB_DIALECT: postgres
+            BF_DB_HOST: postgres
+            BF_DB_PORT: 5432
+            BF_DB_NAME: bifrost
+            BF_DB_USER: bifrost_user
+            BF_DB_PASS: ${POSTGRES_PASSWORD}
         volumes:
             - ./config:/config
         networks:
