@@ -99,6 +99,16 @@ const COMMAND_DEFINITION = new SlashCommandBuilder()
                     .setDescription('Log channel (omit to clear)')
                     .setRequired(false)
             )
+    )
+    .addSubcommand((sub) =>
+        sub
+            .setName('panel')
+            .setDescription('Interactive panel listing bridge commands')
+    )
+    .addSubcommand((sub) =>
+        sub
+            .setName('help')
+            .setDescription('Alias for the command panel')
     );
 
 const META_KEYS = new Set([
