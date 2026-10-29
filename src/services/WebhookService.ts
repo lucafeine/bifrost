@@ -30,6 +30,57 @@ export type WebhookMessageData = {
     embeds?: WebhookEmbed[];
 };
 
+/**
+ * The Fluxer API rejects an empty `avatar_url` ("Invalid form body"), and
+ * webhook-authored Discord messages have no avatar (`avatarURL() === null`),
+ * which the transformers map to `''`. Omit the field instead.
+ */
+function optionalUrl(value: string): string | undefined {
+    return value.trim() === '' ? undefined : value;
+}
+
+/**
+ * The Fluxer SDK carries the API validation details (`errors`, `rawBody`) on
+ * its errors, but the logger only prints name/message/stack by default.
+ */
+export function fluxerErrorDetails(
+    error: unknown
+): Record<string, unknown> | null {
+    if (typeof error !== 'object' || error === null) return null;
+
+    const candidate = error as {
+        name?: unknown;
+        message?: unknown;
+        code?: unknown;
+        statusCode?: unknown;
+        errors?: unknown;
+        rawBody?: unknown;
+    };
+
+    if (candidate.statusCode === undefined && candidate.errors === undefined) {
+        return null;
+    }
+
+    return {
+        name: candidate.name,
+        message: candidate.message,
+        code: candidate.code,
+        statusCode: candidate.statusCode,
+        errors: candidate.errors,
+        rawBody: candidate.rawBody,
+    };
+}
+
+/** Fluxer SDK errors expose `isRetryable` (429 and 5xx only). */
+export function isNonRetryableFluxerError(error: unknown): boolean {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'isRetryable' in error &&
+        (error as { isRetryable?: unknown }).isRetryable === false
+    );
+}
+
 export class WebhookService {
     private discordClient: DiscordClient | null = null;
     private fluxerClient: FluxerClient | null = null;
@@ -105,7 +156,7 @@ export class WebhookService {
             const { id } = await webhook.send({
                 content: data.content,
                 username: data.username,
-                avatarURL: data.avatarURL,
+                avatarURL: optionalUrl(data.avatarURL),
                 files,
                 embeds:
                     data.embeds?.map((embed) => embed.toDiscordEmbed()) || [],
@@ -229,7 +280,7 @@ export class WebhookService {
                 {
                     content: data.content,
                     username: data.username,
-                    avatarUrl: data.avatarURL,
+                    avatarUrl: optionalUrl(data.avatarURL),
                     files:
                         data.attachments?.map((attachment) => ({
                             url: attachment.url,
@@ -261,6 +312,8 @@ export class WebhookService {
             return { messageId: msg.id };
         } catch (error: unknown) {
             logger.error('Error sending message via Fluxer webhook:', error);
+            const details = fluxerErrorDetails(error);
+            if (details) logger.error('Fluxer API error details:', details);
             throw error;
         }
     }
@@ -294,6 +347,8 @@ export class WebhookService {
             });
         } catch (error: unknown) {
             logger.error('Error editing message via Fluxer webhook:', error);
+            const details = fluxerErrorDetails(error);
+            if (details) logger.error('Fluxer API error details:', details);
             throw error;
         }
     }
