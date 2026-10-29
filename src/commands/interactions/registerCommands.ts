@@ -35,6 +35,13 @@ const COMMAND_DEFINITION = new SlashCommandBuilder()
                     .setDescription(
                         'Link a Discord channel to a Fluxer channel'
                     )
+                    .addStringOption((opt) =>
+                        opt
+                            .setName('fluxer_channel')
+                            .setDescription('Fluxer channel (id or name)')
+                            .setRequired(true)
+                            .setAutocomplete(true)
+                    )
                     .addChannelOption((opt) =>
                         opt
                             .setName('discord_channel')
@@ -42,13 +49,6 @@ const COMMAND_DEFINITION = new SlashCommandBuilder()
                                 'Discord channel (defaults to current)'
                             )
                             .setRequired(false)
-                    )
-                    .addStringOption((opt) =>
-                        opt
-                            .setName('fluxer_channel')
-                            .setDescription('Fluxer channel (id or name)')
-                            .setRequired(true)
-                            .setAutocomplete(true)
                     )
             )
     )
