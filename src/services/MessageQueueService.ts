@@ -3,6 +3,8 @@ import { QueuedMessageModel } from '../db/models/QueuedMessageModel';
 import WebhookEmbed from './WebhookEmbed';
 import { LinkService } from './LinkService';
 import {
+    fluxerErrorDetails,
+    isNonRetryableFluxerError,
     WebhookAttachment,
     WebhookMessageData,
     WebhookService,
@@ -154,6 +156,18 @@ export default class MessageQueueService {
                 );
             } catch (err) {
                 if (isFluxerApiBlockError(err)) markFluxerApiBlocked();
+
+                if (isNonRetryableFluxerError(err)) {
+                    logger.error(
+                        `Queue drain: discarding entry ${entry.id} — permanently rejected by Fluxer: ${err}`
+                    );
+                    const details = fluxerErrorDetails(err);
+                    if (details)
+                        logger.error('Fluxer API error details:', details);
+                    await entry.destroy();
+                    continue;
+                }
+
                 await entry.update({
                     retryCount: entry.retryCount + 1,
                     lastError: String(err),

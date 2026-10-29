@@ -8,7 +8,11 @@ import {
 } from '../../utils/fluxerApiGuard';
 import { formatJoinMessage } from '../../utils/formatJoinMessage';
 import MessageQueueService, { toSerializable } from '../MessageQueueService';
-import { WebhookMessageData, WebhookService } from '../WebhookService';
+import {
+    isNonRetryableFluxerError,
+    WebhookMessageData,
+    WebhookService,
+} from '../WebhookService';
 import FluxerEntityResolver from '../entityResolver/FluxerEntityResolver';
 import { LinkService } from '../LinkService';
 import MessageTransformer from '../messageTransformer/MessageTransformer';
@@ -120,6 +124,14 @@ export default class DiscordToFluxerMessageRelay extends MessageRelay<
             this.metricsService?.messageRelayErrors.inc({
                 direction: 'discord_to_fluxer',
             });
+
+            if (isNonRetryableFluxerError(error)) {
+                logger.warn(
+                    `Message ${message.id} was permanently rejected by Fluxer, not queueing it for retry`
+                );
+                return;
+            }
+
             await this.queueService?.enqueue(
                 'discord_to_fluxer',
                 linkedChannel.id,
