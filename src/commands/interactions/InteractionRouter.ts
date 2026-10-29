@@ -1570,7 +1570,7 @@ export class InteractionRouter {
             .getGuildLinkById(pending.guildLinkId)
             .catch(() => null);
         if (!guildLink) {
-            await interaction.editReply({
+            await interaction.message.edit({
                 content: 'Guild link not found.',
                 embeds: [],
                 components: [],
@@ -1674,13 +1674,13 @@ export class InteractionRouter {
                 pending.structureLinkId
             );
 
-            await interaction.editReply({
+            await interaction.message.edit({
                 content: `Twin channel deleted.`,
                 embeds: [],
                 components: [],
             });
         } catch (err) {
-            await interaction.editReply({
+            await interaction.message.edit({
                 content: `Failed to delete twin: ${(err as Error).message}`,
                 embeds: [],
                 components: [],

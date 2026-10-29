@@ -760,12 +760,13 @@ const startDiscordClient = async ({
                     kind === 'category'
                         ? FluxerChannelType.GuildCategory
                         : FluxerChannelType.GuildText,
-                topic: (channel as { topic?: string | null }).topic ?? null,
-                nsfw: (channel as { nsfw?: boolean }).nsfw ?? false,
+                topic:
+                    (channel as { topic?: string | null }).topic ?? undefined,
+                nsfw: (channel as { nsfw?: boolean }).nsfw ?? undefined,
                 rateLimitPerUser:
                     (channel as { rateLimitPerUser?: number | null })
-                        .rateLimitPerUser ?? null,
-                parentId: parentFluxerId,
+                        .rateLimitPerUser ?? undefined,
+                parentId: parentFluxerId ?? undefined,
             });
 
             await linkService.createStructureLink({
