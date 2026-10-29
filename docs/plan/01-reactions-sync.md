@@ -174,22 +174,28 @@ reactions retry inline with the existing `fluxerApiGuard` backoff awareness.
 
 - Strategy is **reconcile-on-flush**, not per-event bookkeeping: every reaction event
   (add/remove/removeEmoji/removeAll) only schedules a trailing debounce (500 ms) per
-  source message; the flush fetches the source + target messages once and diffs the
-  aggregate emoji sets (source reactions vs bridge-owned `me` reactions on the target).
-  Bursts therefore cost at most 2 fetches, and the mirror is self-healing.
+  source message; the flush fetches **both** messages once and reconciles the **union of
+  real user reactions** on both sides. The bridge bot only adds an emoji on a side where
+  no real user has it (`desired = userEmojis(otherSide) − userEmojis(thisSide)`), so
+  reacting on both platforms never duplicates an emoji, and removing a reaction converges
+  correctly. Bursts therefore cost at most 2 fetches, and the mirror is self-healing.
+- The bridge bot's own reaction is excluded from "user reactions" everywhere
+  (`count - (me ? 1 : 0)`); without that, the mirror kept its own emoji alive on the
+  source and removals never propagated (fixed after live testing).
 - Echo prevention is belt-and-braces: events authored by the bridge bot are skipped
-  (`SyncEchoGuard.isBridgeActor`) and each target action reserves an echo key *before*
-  the API call.
-- Only **bridge-owned** reactions are ever removed on the target (`me` flag; never
-  `removeAll`), so real users' reactions are preserved. Unmapped custom emojis are
-  skipped (reactions cannot carry a fallback image).
+  (`SyncEchoGuard.isBridgeActor`) and each action reserves an echo key *before* the API
+  call.
+- Only **bridge-owned** reactions are ever removed (`me` flag; never `removeAll`), so real
+  users' reactions are preserved. Unmapped custom emojis are skipped (reactions cannot
+  carry a fallback image).
 - `syncReactions` is read through the cached settings repository (30 s TTL), so toggling
   it off stops mirroring within the TTL.
 - Metrics: `bifrost_sync_events_total{kind="reaction",direction,result}` and
   `bifrost_sync_echo_suppressed_total{kind="reaction"}`. Errors are also posted to the
   bridge log channels when configured.
-- Unit tests cover the coalescer (debounce, in-flight deferral, errors) and the emoji
-  key/diff logic. Live end-to-end verification (two bots) is still pending.
+- Unit tests cover the coalescer (debounce, in-flight deferral, errors), the emoji
+  key/diff logic and the user-reaction count invariant. Live end-to-end verification is
+  in progress.
 
 ## 11. Open questions
 

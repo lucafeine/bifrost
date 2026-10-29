@@ -1,10 +1,12 @@
 import type {
     Client as FluxerClient,
+    Message as FluxerMessage,
     MessageReaction as FluxerMessageReaction,
     ReactionEmojiPayload,
 } from '@fluxerjs/core';
 import type {
     Client as DiscordClient,
+    Message as DiscordMessage,
     MessageReaction as DiscordMessageReaction,
     PartialMessageReaction,
 } from 'discord.js';
@@ -29,9 +31,16 @@ import {
     emojiKeyFromInput,
     emojiKeyFromMapped,
 } from './emojiKey';
+import { countUserReactions } from './reactionCount';
 import { ReactionEmojiInput, ReactionEvent } from './types';
 
 type Direction = 'discord_to_fluxer' | 'fluxer_to_discord';
+
+interface ReactionPlan {
+    desired: Map<string, MappedEmoji>;
+    toAdd: string[];
+    toRemove: string[];
+}
 
 export interface ReactionSyncServiceOptions {
     linkService: LinkService;
@@ -65,17 +74,71 @@ export function fluxerReactionEmoji(
     };
 }
 
-function fluxerEmojiInput(reaction: FluxerMessageReaction): ReactionEmojiInput {
-    return fluxerReactionEmoji(reaction.emoji);
+/** Reactions that come from real users (the bridge bot's own reaction excluded). */
+function collectDiscordUserEmojis(
+    message: DiscordMessage
+): ReactionEmojiInput[] {
+    const emojis: ReactionEmojiInput[] = [];
+
+    for (const reaction of message.reactions.cache.values()) {
+        if (countUserReactions(reaction.count, reaction.me) <= 0) continue;
+        emojis.push(discordReactionEmoji(reaction));
+    }
+
+    return emojis;
+}
+
+function collectFluxerUserEmojis(message: FluxerMessage): ReactionEmojiInput[] {
+    const emojis: ReactionEmojiInput[] = [];
+
+    for (const reaction of message.reactions.cache.values()) {
+        if (countUserReactions(reaction.count, reaction.me) <= 0) continue;
+        emojis.push(fluxerReactionEmoji(reaction.emoji));
+    }
+
+    return emojis;
+}
+
+function collectDiscordBotReactions(
+    message: DiscordMessage
+): Map<string, DiscordMessageReaction> {
+    const reactions = new Map<string, DiscordMessageReaction>();
+
+    for (const reaction of message.reactions.cache.values()) {
+        if (!reaction.me) continue;
+        reactions.set(
+            emojiKeyFromInput(discordReactionEmoji(reaction)),
+            reaction
+        );
+    }
+
+    return reactions;
+}
+
+function collectFluxerBotReactions(
+    message: FluxerMessage
+): Map<string, FluxerMessageReaction> {
+    const reactions = new Map<string, FluxerMessageReaction>();
+
+    for (const reaction of message.reactions.cache.values()) {
+        if (!reaction.me) continue;
+        reactions.set(
+            emojiKeyFromInput(fluxerReactionEmoji(reaction.emoji)),
+            reaction
+        );
+    }
+
+    return reactions;
 }
 
 /**
  * Mirrors reactions between paired messages (P2).
  *
  * Every reaction event only schedules a trailing debounce per source message;
- * the flush reconciles the aggregate emoji sets (source reactions vs the
- * bridge-owned reactions on the target) and applies the diff. This absorbs
- * bursts and makes the mirror self-healing.
+ * the flush fetches both sides once and reconciles the union of their **real**
+ * user reactions. The bridge bot only reacts on a side when the emoji is
+ * missing there (so reacting on both platforms never duplicates the emoji),
+ * and only bridge-owned reactions are ever removed.
  */
 export default class ReactionSyncService {
     private readonly linkService: LinkService;
@@ -190,18 +253,11 @@ export default class ReactionSyncService {
                 return;
             }
 
-            const changes =
-                platform === 'discord'
-                    ? await this.reconcileDiscordSource(
-                          guildLink,
-                          channelLink,
-                          messageLink
-                      )
-                    : await this.reconcileFluxerSource(
-                          guildLink,
-                          channelLink,
-                          messageLink
-                      );
+            const changes = await this.reconcilePair(
+                guildLink,
+                channelLink,
+                messageLink
+            );
 
             this.metricsService?.syncEvents.inc({
                 kind: 'reaction',
@@ -229,105 +285,81 @@ export default class ReactionSyncService {
         }
     }
 
-    private async reconcileDiscordSource(
+    private async reconcilePair(
         guildLink: GuildLink,
         channelLink: ChannelLink,
         messageLink: MessageLink
     ): Promise<number> {
-        const sourceMessage = await this.discordEntityResolver.fetchMessage(
-            guildLink.discordGuildId,
-            channelLink.discordChannelId,
-            messageLink.discordMessageId
+        const [discordMessage, fluxerMessage] = await Promise.all([
+            this.discordEntityResolver.fetchMessage(
+                guildLink.discordGuildId,
+                channelLink.discordChannelId,
+                messageLink.discordMessageId
+            ),
+            this.fluxerEntityResolver.fetchMessage(
+                guildLink.fluxerGuildId,
+                channelLink.fluxerChannelId,
+                messageLink.fluxerMessageId
+            ),
+        ]);
+
+        const discordUserEmojis = collectDiscordUserEmojis(discordMessage);
+        const fluxerUserEmojis = collectFluxerUserEmojis(fluxerMessage);
+        const discordUserKeys = new Set(
+            discordUserEmojis.map(emojiKeyFromInput)
         );
-        const targetMessage = await this.fluxerEntityResolver.fetchMessage(
+        const fluxerUserKeys = new Set(fluxerUserEmojis.map(emojiKeyFromInput));
+
+        const discordBotReactions = collectDiscordBotReactions(discordMessage);
+        const fluxerBotReactions = collectFluxerBotReactions(fluxerMessage);
+
+        // The bridge only adds an emoji on a side where no real user has it.
+        const discordPlan = await this.planReactions(
+            fluxerUserEmojis,
+            'fluxer',
             guildLink.fluxerGuildId,
-            channelLink.fluxerChannelId,
-            messageLink.fluxerMessageId
+            'discord',
+            guildLink.discordGuildId,
+            discordUserKeys,
+            discordBotReactions.keys()
         );
-
-        const sourceEmojis = [...sourceMessage.reactions.cache.values()].map(
-            (reaction) => discordReactionEmoji(reaction)
-        );
-        const current = new Map<string, FluxerMessageReaction>();
-        for (const reaction of targetMessage.reactions.cache.values()) {
-            if (!reaction.me) continue;
-            current.set(
-                emojiKeyFromInput(fluxerEmojiInput(reaction)),
-                reaction
-            );
-        }
-
-        const plan = await this.planReactions(
-            sourceEmojis,
+        const fluxerPlan = await this.planReactions(
+            discordUserEmojis,
             'discord',
             guildLink.discordGuildId,
             'fluxer',
             guildLink.fluxerGuildId,
-            current.keys()
+            fluxerUserKeys,
+            fluxerBotReactions.keys()
         );
 
-        for (const key of plan.toAdd) {
-            const mapped = plan.desired.get(key) as MappedEmoji;
-            this.echoGuard.expect(
-                `fluxer:reaction:add:${targetMessage.id}:${key}`
-            );
-            await targetMessage.react(mapped.value);
-        }
+        let changes = 0;
+        changes += await this.applyDiscordPlan(
+            discordMessage,
+            discordPlan,
+            discordBotReactions
+        );
+        changes += await this.applyFluxerPlan(
+            fluxerMessage,
+            fluxerPlan,
+            fluxerBotReactions
+        );
 
-        for (const key of plan.toRemove) {
-            const reaction = current.get(key) as FluxerMessageReaction;
-            this.echoGuard.expect(
-                `fluxer:reaction:remove:${targetMessage.id}:${key}`
-            );
-            await targetMessage.removeReaction(reaction.emojiIdentifier);
-        }
-
-        return plan.toAdd.length + plan.toRemove.length;
+        return changes;
     }
 
-    private async reconcileFluxerSource(
-        guildLink: GuildLink,
-        channelLink: ChannelLink,
-        messageLink: MessageLink
+    private async applyDiscordPlan(
+        message: DiscordMessage,
+        plan: ReactionPlan,
+        current: Map<string, DiscordMessageReaction>
     ): Promise<number> {
-        const sourceMessage = await this.fluxerEntityResolver.fetchMessage(
-            guildLink.fluxerGuildId,
-            channelLink.fluxerChannelId,
-            messageLink.fluxerMessageId
-        );
-        const targetMessage = await this.discordEntityResolver.fetchMessage(
-            guildLink.discordGuildId,
-            channelLink.discordChannelId,
-            messageLink.discordMessageId
-        );
-
-        const sourceEmojis = [...sourceMessage.reactions.cache.values()].map(
-            fluxerEmojiInput
-        );
-        const current = new Map<string, DiscordMessageReaction>();
-        for (const reaction of targetMessage.reactions.cache.values()) {
-            if (!reaction.me) continue;
-            current.set(
-                emojiKeyFromInput(discordReactionEmoji(reaction)),
-                reaction
-            );
-        }
-
-        const plan = await this.planReactions(
-            sourceEmojis,
-            'fluxer',
-            guildLink.fluxerGuildId,
-            'discord',
-            guildLink.discordGuildId,
-            current.keys()
-        );
+        let changes = 0;
 
         for (const key of plan.toAdd) {
             const mapped = plan.desired.get(key) as MappedEmoji;
-            this.echoGuard.expect(
-                `discord:reaction:add:${targetMessage.id}:${key}`
-            );
-            await targetMessage.react(mapped.value);
+            this.echoGuard.expect(`discord:reaction:add:${message.id}:${key}`);
+            await message.react(mapped.value);
+            changes++;
         }
 
         const botId = this.discordClient?.user?.id ?? null;
@@ -338,14 +370,46 @@ export default class ReactionSyncService {
                 );
                 break;
             }
-            const reaction = current.get(key) as DiscordMessageReaction;
+
+            const reaction = current.get(key);
+            if (!reaction) continue;
+
             this.echoGuard.expect(
-                `discord:reaction:remove:${targetMessage.id}:${key}`
+                `discord:reaction:remove:${message.id}:${key}`
             );
             await reaction.users.remove(botId);
+            changes++;
         }
 
-        return plan.toAdd.length + plan.toRemove.length;
+        return changes;
+    }
+
+    private async applyFluxerPlan(
+        message: FluxerMessage,
+        plan: ReactionPlan,
+        current: Map<string, FluxerMessageReaction>
+    ): Promise<number> {
+        let changes = 0;
+
+        for (const key of plan.toAdd) {
+            const mapped = plan.desired.get(key) as MappedEmoji;
+            this.echoGuard.expect(`fluxer:reaction:add:${message.id}:${key}`);
+            await message.react(mapped.value);
+            changes++;
+        }
+
+        for (const key of plan.toRemove) {
+            const reaction = current.get(key);
+            if (!reaction) continue;
+
+            this.echoGuard.expect(
+                `fluxer:reaction:remove:${message.id}:${key}`
+            );
+            await message.removeReaction(reaction.emojiIdentifier);
+            changes++;
+        }
+
+        return changes;
     }
 
     private async planReactions(
@@ -354,12 +418,9 @@ export default class ReactionSyncService {
         sourceGuildId: string,
         targetPlatform: SyncPlatform,
         targetGuildId: string,
-        currentKeys: Iterable<string>
-    ): Promise<{
-        desired: Map<string, MappedEmoji>;
-        toAdd: string[];
-        toRemove: string[];
-    }> {
+        targetUserKeys: Set<string>,
+        currentBotKeys: Iterable<string>
+    ): Promise<ReactionPlan> {
         const desired = new Map<string, MappedEmoji>();
 
         for (const emoji of sourceEmojis) {
@@ -382,12 +443,16 @@ export default class ReactionSyncService {
                 continue;
             }
 
-            desired.set(emojiKeyFromMapped(mapped), mapped);
+            const key = emojiKeyFromMapped(mapped);
+            // A real user on the target already has this emoji: no bot mirror.
+            if (targetUserKeys.has(key)) continue;
+
+            desired.set(key, mapped);
         }
 
         const { toAdd, toRemove } = diffReactionKeys(
             desired.keys(),
-            currentKeys
+            currentBotKeys
         );
 
         return { desired, toAdd, toRemove };

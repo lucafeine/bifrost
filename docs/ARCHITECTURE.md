@@ -63,8 +63,9 @@ Fluxer message ──┘   (normalize, emoji)   └─▶ Discord webhook messag
 ### Reactions (P2)
 `messageReactionAdd/Remove/RemoveEmoji/RemoveAll` on either side schedule a coalesced
 reconcile of the paired message (`src/services/reactionSync/`): a 500 ms trailing debounce
-per message, then one fetch of source + target messages, emoji mapping through
-`EmojiMapper`, and a diff against the bridge-owned (`me`) reactions on the target.
+per message, then one fetch of both messages and a reconciliation of the **union of real
+user reactions**. The bot only adds an emoji on a side where no real user has it, so the
+emoji set is identical on both sides without duplicate counts, and removals converge.
 Mirrored reactions are attributed to the bot; only bridge-owned reactions are ever
 removed.
 
@@ -160,6 +161,6 @@ Next free number: **00004**.
 | 2026-10 | Role sync scope = **structure only** (name/color/position mirror + mention rendering). Membership sync is deferred to a future identity-linking phase. |
 | 2026-10 | Management UI lives on **Discord** (slash commands + components). Fluxer keeps prefix commands (`!b`), as Fluxer has no interaction model. |
 | 2026-10 | P0 foundations landed: `guild_link_settings` toggles (defaults = today's behavior), `SyncEchoGuard`, `EmojiMapper`, bridge log + sync metrics. No user-visible change yet. |
-| 2026-10 | P2 reactions landed as **reconcile-on-flush** (trailing debounce per message, aggregate emoji-set diff) rather than per-event bookkeeping: bursts cost ≤ 2 fetches, the mirror is self-healing, and counts stay coherent without tracking individual users. |
+| 2026-10 | P2 reactions landed as **reconcile-on-flush** (trailing debounce per message, union of real user reactions from both sides) rather than per-event bookkeeping: bursts cost ≤ 2 fetches, the emoji set converges without duplicates, and removals propagate correctly. |
 | 2026-10 | `SyncEchoGuard` uses a small internal TTL map with an injectable clock instead of `lru-cache` (whose TTL clock is not injectable → non-deterministic tests). |
 | 2026-10 | Test suite introduced with vitest (`*.spec.ts`, excluded from the build). Runs without live API access: SDK-type-checked code + unit tests + sqlite migration tests. |
