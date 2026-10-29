@@ -101,14 +101,7 @@ const COMMAND_DEFINITION = new SlashCommandBuilder()
             )
     )
     .addSubcommand((sub) =>
-        sub
-            .setName('panel')
-            .setDescription('Interactive panel listing bridge commands')
-    )
-    .addSubcommand((sub) =>
-        sub
-            .setName('help')
-            .setDescription('Alias for the command panel')
+        sub.setName('help').setDescription('List bridge commands')
     );
 
 const META_KEYS = new Set([

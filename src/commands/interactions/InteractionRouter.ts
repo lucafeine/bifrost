@@ -3,7 +3,6 @@ import {
     ButtonBuilder,
     ButtonInteraction,
     ButtonStyle,
-    StringSelectMenuBuilder,
     ChannelType,
     ChatInputCommandInteraction,
     Client,
@@ -254,8 +253,7 @@ export class InteractionRouter {
         if (sub === 'settings') return this.settingsSlash(interaction);
         if (sub === 'status') return this.statusSlash(interaction);
         if (sub === 'log') return this.logSlash(interaction);
-        if (sub === 'panel' || sub === 'help')
-            return this.panelSlash(interaction);
+        if (sub === 'help') return this.helpSlash(interaction);
 
         await interaction.reply({
             content: 'Unknown subcommand.',
@@ -586,130 +584,25 @@ export class InteractionRouter {
         });
     }
 
-    private readonly panelCommands: {
-        value: string;
-        name: string;
-        description: string;
-        usage: string;
-        permission: string;
-    }[] = [
-        {
-            value: 'link_guild',
-            name: '/bridge link guild',
-            description: 'Bridge this Discord server to a Fluxer guild.',
-            usage: '/bridge link guild partner:<fluxer guild id>',
-            permission: 'Manage Guild',
-        },
-        {
-            value: 'link_channel',
-            name: '/bridge link channel',
-            description: 'Link a Discord channel to a Fluxer channel.',
-            usage: '/bridge link channel fluxer_channel:<id> [discord_channel]',
-            permission: 'Manage Webhooks',
-        },
-        {
-            value: 'autolink',
-            name: '/bridge autolink',
-            description: 'Fuzzy-match and link channels automatically.',
-            usage: '/bridge autolink [apply:true]',
-            permission: 'Manage Webhooks',
-        },
-        {
-            value: 'unlink',
-            name: '/bridge unlink',
-            description: 'Unlink a guild or channel bridge.',
-            usage: '/bridge unlink (then select)',
-            permission: 'Manage Guild / Manage Webhooks',
-        },
-        {
-            value: 'list',
-            name: '/bridge list',
-            description: 'List linked channels.',
-            usage: '/bridge list [all] [server]',
-            permission: 'Manage Webhooks',
-        },
-        {
-            value: 'settings',
-            name: '/bridge settings',
-            description: 'Interactive settings panel.',
-            usage: '/bridge settings',
-            permission: 'Manage Guild',
-        },
-        {
-            value: 'status',
-            name: '/bridge status',
-            description: 'Show bot status and health.',
-            usage: '/bridge status',
-            permission: 'Manage Webhooks',
-        },
-        {
-            value: 'log',
-            name: '/bridge log',
-            description: 'Set or clear the bridge log channel.',
-            usage: '/bridge log [channel]',
-            permission: 'Manage Guild',
-        },
-    ];
-
-    private buildPanelOverview(): {
-        embed: EmbedBuilder;
-        components: any[];
-    } {
-        const lines = this.panelCommands.map(
-            (c) => `**${c.name}** — ${c.description}`
-        );
+    private async helpSlash(interaction: ChatInputCommandInteraction) {
+        const guildId = await this.ensureGuild(interaction);
+        if (!guildId) return;
+        const lines = [
+            '`/bridge link guild partner:<id>` — Bridge this Discord server to a Fluxer guild.',
+            '`/bridge link channel fluxer_channel:<id> [discord_channel]` — Link a Discord channel to a Fluxer channel.',
+            '`/bridge autolink [apply:true]` — Fuzzy-match and link channels automatically.',
+            '`/bridge unlink` — Unlink a guild or channel bridge.',
+            '`/bridge list [all] [server]` — List linked channels.',
+            '`/bridge settings` — Interactive settings panel.',
+            '`/bridge status` — Show bot status and health.',
+            '`/bridge log [channel]` — Set or clear the bridge log channel.',
+        ];
         const embed = new EmbedBuilder()
-            .setTitle('Bifröst Command Panel')
+            .setTitle('Bifröst — Commands')
             .setDescription(lines.join('\n'))
             .setColor(EmbedColors.Info)
             .setTimestamp();
-        const select = new StringSelectMenuBuilder()
-            .setCustomId('bifrost:panel:select')
-            .setPlaceholder('Select a command for details')
-            .addOptions(
-                this.panelCommands.map((c) => ({
-                    label: c.name,
-                    description: c.description.slice(0, 100),
-                    value: c.value,
-                }))
-            );
-        const row = new ActionRowBuilder<any>().addComponents(select);
-        return { embed, components: [row] };
-    }
-
-    private buildPanelDetail(value: string): {
-        embed: EmbedBuilder;
-        components: any[];
-    } | null {
-        const cmd = this.panelCommands.find((c) => c.value === value);
-        if (!cmd) return null;
-        const embed = new EmbedBuilder()
-            .setTitle(cmd.name)
-            .setDescription(cmd.description)
-            .addFields(
-                { name: 'Usage', value: `\`${cmd.usage}\``, inline: false },
-                { name: 'Permission', value: cmd.permission, inline: false }
-            )
-            .setColor(EmbedColors.Info)
-            .setTimestamp();
-        const row = new ActionRowBuilder<any>().addComponents(
-            new ButtonBuilder()
-                .setCustomId('bifrost:panel:back')
-                .setLabel('Back')
-                .setStyle(ButtonStyle.Secondary)
-        );
-        return { embed, components: [row] };
-    }
-
-    private async panelSlash(interaction: ChatInputCommandInteraction) {
-        const guildId = await this.ensureGuild(interaction);
-        if (!guildId) return;
-        const { embed, components } = this.buildPanelOverview();
-        await interaction.reply({
-            embeds: [embed],
-            components,
-            ephemeral: true,
-        });
+        await interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     private async settingsSlash(interaction: ChatInputCommandInteraction) {
@@ -784,11 +677,6 @@ export class InteractionRouter {
     // ---------- Buttons ----------
     private async handleButton(interaction: ButtonInteraction) {
         const id = interaction.customId;
-        if (id === 'bifrost:panel:back') {
-            const { embed, components } = this.buildPanelOverview();
-            await interaction.update({ embeds: [embed], components });
-            return;
-        }
         if (id.startsWith('bifrost:linkguild:confirm:')) {
             const token = id.split(':').slice(3).join(':');
             await this.confirmLinkGuild(interaction, token);
@@ -1250,22 +1138,6 @@ export class InteractionRouter {
 
     // ---------- Select ----------
     private async handleSelect(interaction: StringSelectMenuInteraction) {
-        if (interaction.customId === 'bifrost:panel:select') {
-            const value = interaction.values?.[0];
-            const detail = value ? this.buildPanelDetail(value) : null;
-            if (!detail) {
-                await interaction.reply({
-                    content: 'Unknown command.',
-                    ephemeral: true,
-                });
-                return;
-            }
-            await interaction.update({
-                embeds: [detail.embed],
-                components: detail.components,
-            });
-            return;
-        }
         if (interaction.customId !== 'bifrost:unlink:select') return;
         const value = interaction.values?.[0];
         if (!value) return;
