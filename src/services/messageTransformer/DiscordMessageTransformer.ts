@@ -129,7 +129,7 @@ export default class DiscordMessageTransformer extends MessageTransformer<
             message.poll.answers.some((a) => a.text) &&
             message.poll.expiresTimestamp;
 
-        const messageContent = isPollPresent
+        const pollText = isPollPresent
             ? getPollMessage(
                   message.poll!.question.text!,
                   message
@@ -137,9 +137,20 @@ export default class DiscordMessageTransformer extends MessageTransformer<
                       .filter((t): t is string => !!t),
                   message.poll!.expiresTimestamp!
               )
-            : emojiReplacedContent;
+            : null;
+
+        const messageContent = pollText ? '' : emojiReplacedContent;
 
         const embeds: WebhookEmbed[] = this.buildRichEmbeds(message);
+
+        if (pollText) {
+            embeds.unshift(
+                new WebhookEmbed({
+                    description: pollText,
+                    color: 0x5865f2,
+                })
+            );
+        }
 
         if (message.reference) {
             const isForwarded = message.flags.has(MessageFlags.HasSnapshot);
