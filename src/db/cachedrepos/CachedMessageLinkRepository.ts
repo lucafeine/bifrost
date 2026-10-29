@@ -145,6 +145,12 @@ export class CachedMessageLinkRepository implements MessageLinkRepository {
         return result;
     }
 
+    async getMessageLinksByChannelLinkId(
+        channelLinkId: string
+    ): Promise<MessageLink[]> {
+        return this.repository.getMessageLinksByChannelLinkId(channelLinkId);
+    }
+
     async getMessageLinksCount(): Promise<number> {
         const cached = this.metaCache.get('count');
         if (cached !== undefined) return cached;

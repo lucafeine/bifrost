@@ -131,6 +131,7 @@ const main = async () => {
         emojiMapper,
         bridgeLogService,
         reactionSyncService,
+        guildLinkSettingsRepo: cachedGuildLinkSettingsRepo,
     };
 
     const fluxerClientRef: { current: FluxerClient | null } = { current: null };

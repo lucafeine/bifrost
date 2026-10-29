@@ -419,6 +419,214 @@ const startDiscordClient = async ({
             .catch((err) => logger.error('Interaction router error:', err));
     });
 
+    const typingThrottle = new Map<string, number>();
+
+    client.on(Events.TypingStart, async (typing) => {
+        try {
+            if (!typing.inGuild()) return;
+            const user = typing.user;
+            if (!user || user.bot || user.id === client.user?.id) return;
+
+            const channelLink = await linkService
+                .getChannelLinkByDiscordChannelId(typing.channel.id)
+                .catch(() => null);
+            if (!channelLink) return;
+
+            const guildLink = await linkService
+                .getGuildLinkById(channelLink.guildLinkId)
+                .catch(() => null);
+            if (!guildLink) return;
+
+            const settings = await guildLinkSettingsRepo
+                .getOrCreate(guildLink.id)
+                .catch(() => null);
+            if (!settings?.syncTyping) return;
+
+            const key = `${channelLink.id}:${user.id}`;
+            const nowTs = Date.now();
+            const last = typingThrottle.get(key) ?? 0;
+            if (nowTs - last < 8_000) return;
+            typingThrottle.set(key, nowTs);
+
+            const fluxerChannel = await fluxerEntityResolver
+                .fetchChannel(
+                    guildLink.fluxerGuildId,
+                    channelLink.fluxerChannelId
+                )
+                .catch(() => null);
+            if (
+                fluxerChannel &&
+                typeof (fluxerChannel as { sendTyping?: () => Promise<void> })
+                    .sendTyping === 'function'
+            ) {
+                await (fluxerChannel as { sendTyping: () => Promise<void> })
+                    .sendTyping()
+                    .catch(() => {});
+            }
+        } catch (err) {
+            logger.debug('Discord typing forward error:', err);
+        }
+    });
+
+    // Bulk delete mirror
+    client.on(Events.MessageBulkDelete, async (messages) => {
+        try {
+            const ids = [...messages.keys()];
+            const links = (
+                await Promise.all(
+                    ids.map((id) =>
+                        linkService
+                            .getMessageLinkByDiscordMessageId(id)
+                            .catch(() => null)
+                    )
+                )
+            ).filter(Boolean) as Awaited<
+                ReturnType<typeof linkService.getMessageLinkByDiscordMessageId>
+            >[];
+            if (!links.length) return;
+
+            const concurrency = 5;
+            for (let i = 0; i < links.length; i += concurrency) {
+                const chunk = links.slice(i, i + concurrency);
+                await Promise.all(
+                    chunk.map(async (link) => {
+                        if (!link) return;
+                        const channelLink = await linkService
+                            .getChannelLinkById(link.channelLinkId)
+                            .catch(() => null);
+                        const guildLink = channelLink
+                            ? await linkService
+                                  .getGuildLinkById(channelLink.guildLinkId)
+                                  .catch(() => null)
+                            : null;
+                        if (!channelLink || !guildLink) return;
+                        try {
+                            const msg = await fluxerEntityResolver.fetchMessage(
+                                guildLink.fluxerGuildId,
+                                channelLink.fluxerChannelId,
+                                link.fluxerMessageId
+                            );
+                            await msg.delete();
+                        } catch {
+                            // ignore
+                        }
+                        try {
+                            await linkService.deleteMessageLink(link.id);
+                        } catch {
+                            // ignore
+                        }
+                    })
+                );
+            }
+        } catch (err) {
+            logger.debug('Discord bulk delete mirror error:', err);
+        }
+    });
+
+    // Pins reconciliation trigger
+    client.on(Events.ChannelPinsUpdate, async (channel) => {
+        try {
+            if (
+                !channel ||
+                !('isTextBased' in channel) ||
+                !channel.isTextBased()
+            )
+                return;
+            const channelLink = await linkService
+                .getChannelLinkByDiscordChannelId(channel.id)
+                .catch(() => null);
+            if (!channelLink) return;
+            const guildLink = await linkService
+                .getGuildLinkById(channelLink.guildLinkId)
+                .catch(() => null);
+            if (!guildLink) return;
+            const settings = await guildLinkSettingsRepo
+                .getOrCreate(guildLink.id)
+                .catch(() => null);
+            if (!settings?.syncPins) return;
+
+            const links = await linkService
+                .getMessageLinksForChannelLink(channelLink.id)
+                .catch(() => []);
+            const discordPinnedIds = new Set<string>();
+            if (
+                channel &&
+                (
+                    channel as {
+                        messages?: { fetchPinned?: () => Promise<unknown> };
+                    }
+                ).messages?.fetchPinned
+            ) {
+                const pinned = await (
+                    channel as {
+                        messages: {
+                            fetchPinned: () => Promise<
+                                Map<string, unknown> | unknown[]
+                            >;
+                        };
+                    }
+                ).messages
+                    .fetchPinned()
+                    .catch(() => null);
+                if (pinned) {
+                    if (pinned instanceof Map) {
+                        for (const id of pinned.keys())
+                            discordPinnedIds.add(id);
+                    } else if (Array.isArray(pinned)) {
+                        for (const m of pinned as { id: string }[])
+                            discordPinnedIds.add(m.id);
+                    }
+                }
+            }
+
+            const fluxerChannel = await fluxerEntityResolver
+                .fetchChannel(
+                    guildLink.fluxerGuildId,
+                    channelLink.fluxerChannelId
+                )
+                .catch(() => null);
+            const fluxerPinnedIds = new Set<string>();
+            if (
+                fluxerChannel &&
+                typeof (
+                    fluxerChannel as unknown as {
+                        fetchPinnedMessages?: () => Promise<unknown[]>;
+                    }
+                ).fetchPinnedMessages === 'function'
+            ) {
+                const pinned = (await (
+                    fluxerChannel as unknown as {
+                        fetchPinnedMessages: () => Promise<{ id: string }[]>;
+                    }
+                )
+                    .fetchPinnedMessages()
+                    .catch(() => [])) as { id: string }[];
+                for (const m of pinned) fluxerPinnedIds.add(m.id);
+            }
+
+            for (const link of links) {
+                const sourcePinned = discordPinnedIds.has(
+                    link.discordMessageId
+                );
+                const targetPinned = fluxerPinnedIds.has(link.fluxerMessageId);
+                if (sourcePinned === targetPinned) continue;
+                try {
+                    const msg = await fluxerEntityResolver.fetchMessage(
+                        guildLink.fluxerGuildId,
+                        channelLink.fluxerChannelId,
+                        link.fluxerMessageId
+                    );
+                    if (sourcePinned) await msg.pin();
+                    else await msg.unpin();
+                } catch {
+                    // ignore
+                }
+            }
+        } catch (err) {
+            logger.debug('Discord pins mirror error:', err);
+        }
+    });
+
     await client.login(DISCORD_TOKEN);
 
     return client;

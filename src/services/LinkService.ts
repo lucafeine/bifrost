@@ -191,6 +191,10 @@ export class LinkService {
         );
     }
 
+    async getMessageLinksForChannelLink(channelLinkId: string) {
+        return this.messageRepo.getMessageLinksByChannelLinkId(channelLinkId);
+    }
+
     async createMessageLink({
         discordMessageId,
         fluxerMessageId,

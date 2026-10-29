@@ -24,5 +24,9 @@ export interface MessageLinkRepository {
 
     deleteByChannelLinkId(channelLinkId: string): Promise<void>;
 
+    getMessageLinksByChannelLinkId(
+        channelLinkId: string
+    ): Promise<MessageLink[]>;
+
     getMessageLinksCount(): Promise<number>;
 }

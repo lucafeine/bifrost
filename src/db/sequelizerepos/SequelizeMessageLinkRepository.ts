@@ -69,6 +69,15 @@ export class SequelizeMessageLinkRepository implements MessageLinkRepository {
         });
     }
 
+    async getMessageLinksByChannelLinkId(
+        channelLinkId: string
+    ): Promise<MessageLink[]> {
+        const models = await MessageLinkModel.findAll({
+            where: { channelLinkId },
+        });
+        return models.map((m) => m.toJSON() as MessageLink);
+    }
+
     async getMessageLinksCount(): Promise<number> {
         return await MessageLinkModel.count();
     }
