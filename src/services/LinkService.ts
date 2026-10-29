@@ -1,12 +1,14 @@
 import { MessageLinkRepository } from '../db/repositories/MessageLinkRepository';
 import { ChannelLinkRepository } from '../db/repositories/ChannelLinkRepository';
 import { GuildLinkRepository } from '../db/repositories/GuildLinkRepository';
+import { StructureLinkRepository } from '../db/repositories/StructureLinkRepository';
 
 export class LinkService {
     constructor(
         private guildRepo: GuildLinkRepository,
         private channelRepo: ChannelLinkRepository,
-        private messageRepo: MessageLinkRepository
+        private messageRepo: MessageLinkRepository,
+        private structureRepo?: StructureLinkRepository
     ) {}
 
     async getGuildLinkById(id: string) {
@@ -216,5 +218,31 @@ export class LinkService {
 
     async deleteMessageLink(id: string) {
         return this.messageRepo.deleteMessageLink(id);
+    }
+
+    async getStructureLinkByDiscordChannelId(discordChannelId: string) {
+        return this.structureRepo?.findByDiscordChannelId(discordChannelId) ?? null;
+    }
+
+    async getStructureLinkByFluxerChannelId(fluxerChannelId: string) {
+        return this.structureRepo?.findByFluxerChannelId(fluxerChannelId) ?? null;
+    }
+
+    async getStructureLinksForGuild(guildLinkId: string) {
+        return this.structureRepo?.findByGuildLinkId(guildLinkId) ?? [];
+    }
+
+    async createStructureLink(params: {
+        guildLinkId: string;
+        discordChannelId: string;
+        fluxerChannelId: string;
+        kind: 'category' | 'text';
+        origin: 'manual' | 'auto' | 'autolink';
+    }) {
+        return this.structureRepo?.create(params) ?? null;
+    }
+
+    async deleteStructureLink(id: string) {
+        return this.structureRepo?.deleteById(id);
     }
 }

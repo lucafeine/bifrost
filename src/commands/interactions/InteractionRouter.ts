@@ -14,6 +14,7 @@ import {
 import { LinkService } from '../../services/LinkService';
 import { WebhookService } from '../../services/WebhookService';
 import FluxerEntityResolver from '../../services/entityResolver/FluxerEntityResolver';
+import DiscordEntityResolver from '../../services/entityResolver/DiscordEntityResolver';
 import { GuildLinkSettingsRepository } from '../../db/repositories/GuildLinkSettingsRepository';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { GuildLinkSettingsUpdate } from '../../db/entities/GuildLinkSettings';
@@ -25,6 +26,10 @@ import StatsDiscordCommandHandler from '../discord/handlers/StatsDiscordCommandH
 import { EmbedColors } from '../../utils/embeds';
 import logger from '../../utils/logging/logger';
 import { matchChannels, ChannelInfo } from '../../utils/channelMatcher';
+import {
+    getPendingStructureDelete,
+    deletePendingStructureDelete,
+} from './StructureDeleteStore';
 import crypto from 'crypto';
 
 type PendingLinkGuild = {
@@ -103,6 +108,7 @@ export class InteractionRouter {
             linkService: LinkService;
             webhookService: WebhookService;
             fluxerEntityResolver: FluxerEntityResolver;
+            discordEntityResolver: DiscordEntityResolver;
             settingsRepo: GuildLinkSettingsRepository;
             discordStatsService: any;
             fluxerStatsService: any;
@@ -677,6 +683,21 @@ export class InteractionRouter {
     // ---------- Buttons ----------
     private async handleButton(interaction: ButtonInteraction) {
         const id = interaction.customId;
+        if (id.startsWith('bifrost:structdelete:confirm:')) {
+            const token = id.split(':').slice(3).join(':');
+            await this.confirmStructureDelete(interaction, token);
+            return;
+        }
+        if (id.startsWith('bifrost:structdelete:cancel:')) {
+            const token = id.split(':').slice(3).join(':');
+            deletePendingStructureDelete(token);
+            await interaction.update({
+                content: 'Cancelled.',
+                embeds: [],
+                components: [],
+            });
+            return;
+        }
         if (id.startsWith('bifrost:linkguild:confirm:')) {
             const token = id.split(':').slice(3).join(':');
             await this.confirmLinkGuild(interaction, token);
@@ -1134,6 +1155,150 @@ export class InteractionRouter {
             }
         }
         this.pending.delete(token);
+    }
+
+    private async confirmStructureDelete(
+        interaction: ButtonInteraction,
+        token: string
+    ) {
+        const pending = getPendingStructureDelete(token);
+        if (!pending) {
+            await interaction.reply({
+                content: 'Expired or invalid action.',
+                ephemeral: true,
+            });
+            return;
+        }
+        if (!interaction.guildId) {
+            await interaction.reply({
+                content: 'Wrong context.',
+                ephemeral: true,
+            });
+            return;
+        }
+        await interaction.deferUpdate();
+
+        const guildLink = await this.deps.linkService
+            .getGuildLinkById(pending.guildLinkId)
+            .catch(() => null);
+        if (!guildLink) {
+            await interaction.editReply({
+                content: 'Guild link not found.',
+                embeds: [],
+                components: [],
+            });
+            deletePendingStructureDelete(token);
+            return;
+        }
+
+        try {
+            if (pending.platform === 'discord') {
+                const channel = await this.deps.fluxerEntityResolver
+                    .fetchChannel(
+                        guildLink.fluxerGuildId,
+                        pending.twinChannelId
+                    )
+                    .catch(() => null);
+                if (
+                    channel &&
+                    typeof (
+                        channel as unknown as { delete?: () => Promise<void> }
+                    ).delete === 'function'
+                ) {
+                    await (
+                        channel as unknown as { delete: () => Promise<void> }
+                    ).delete();
+                }
+            } else {
+                const channel = await this.deps.discordEntityResolver
+                    .fetchChannel(
+                        guildLink.discordGuildId,
+                        pending.twinChannelId
+                    )
+                    .catch(() => null);
+                if (
+                    channel &&
+                    typeof (
+                        channel as unknown as { delete?: () => Promise<void> }
+                    ).delete === 'function'
+                ) {
+                    await (
+                        channel as unknown as { delete: () => Promise<void> }
+                    ).delete();
+                }
+            }
+
+            const channelLink =
+                pending.platform === 'discord'
+                    ? await this.deps.linkService
+                          .getChannelLinkByFluxerChannelId(
+                              pending.twinChannelId
+                          )
+                          .catch(() => null)
+                    : await this.deps.linkService
+                          .getChannelLinkByDiscordChannelId(
+                              pending.twinChannelId
+                          )
+                          .catch(() => null);
+            if (channelLink) {
+                if (pending.platform === 'discord') {
+                    await this.deps.webhookService
+                        .deleteDiscordWebhook(
+                            channelLink.discordWebhookId,
+                            channelLink.discordWebhookToken
+                        )
+                        .catch(() => {});
+                    await this.deps.webhookService
+                        .deleteFluxerWebhook(
+                            channelLink.fluxerWebhookId,
+                            channelLink.fluxerWebhookToken
+                        )
+                        .catch(() => {});
+                    await this.deps.linkService
+                        .removeChannelLinkForDiscord(
+                            guildLink.discordGuildId,
+                            channelLink.linkId
+                        )
+                        .catch(() => {});
+                } else {
+                    await this.deps.webhookService
+                        .deleteDiscordWebhook(
+                            channelLink.discordWebhookId,
+                            channelLink.discordWebhookToken
+                        )
+                        .catch(() => {});
+                    await this.deps.webhookService
+                        .deleteFluxerWebhook(
+                            channelLink.fluxerWebhookId,
+                            channelLink.fluxerWebhookToken
+                        )
+                        .catch(() => {});
+                    await this.deps.linkService
+                        .removeChannelLinkForFluxer(
+                            guildLink.fluxerGuildId,
+                            channelLink.linkId
+                        )
+                        .catch(() => {});
+                }
+            }
+
+            await this.deps.linkService.deleteStructureLink(
+                pending.structureLinkId
+            );
+
+            await interaction.editReply({
+                content: `Twin channel deleted.`,
+                embeds: [],
+                components: [],
+            });
+        } catch (err) {
+            await interaction.editReply({
+                content: `Failed to delete twin: ${(err as Error).message}`,
+                embeds: [],
+                components: [],
+            });
+        }
+        deletePendingStructureDelete(token);
     }
 
     // ---------- Select ----------

@@ -7,6 +7,7 @@ import { SequelizeChannelLinkRepository } from './db/sequelizerepos/SequelizeCha
 import { SequelizeGuildLinkRepository } from './db/sequelizerepos/SequelizeGuildLinkRepository';
 import { SequelizeGuildLinkSettingsRepository } from './db/sequelizerepos/SequelizeGuildLinkSettingsRepository';
 import { SequelizeMessageLinkRepository } from './db/sequelizerepos/SequelizeMessageLinkRepository';
+import { SequelizeStructureLinkRepository } from './db/sequelizerepos/SequelizeStructureLinkRepository';
 import startDiscordClient from './discord';
 import type { Client as FluxerClient } from '@fluxerjs/core';
 import startFluxerClient from './fluxer';
@@ -69,6 +70,7 @@ const main = async () => {
     const guildLinkSettingsRepo = new SequelizeGuildLinkSettingsRepository();
     const channelLinkRepo = new SequelizeChannelLinkRepository();
     const messageLinkRepo = new SequelizeMessageLinkRepository();
+    const structureLinkRepo = new SequelizeStructureLinkRepository();
 
     const cachedGuildLinkRepo = new CachedGuildLinkRepository(guildLinkRepo, 0);
     const cachedGuildLinkSettingsRepo = new CachedGuildLinkSettingsRepository(
@@ -87,7 +89,8 @@ const main = async () => {
     const linkService = new LinkService(
         cachedGuildLinkRepo,
         cachedChannelLinkRepo,
-        cachedMessageLinkRepo
+        cachedMessageLinkRepo,
+        structureLinkRepo
     );
     const webhookService = new WebhookService();
     const discordEntityResolver = new DiscordEntityResolver();

@@ -48,6 +48,10 @@ import { DbStatsService } from './services/DbStatsService';
 import EmojiMapper from './services/emojiMapping/EmojiMapper';
 import BridgeLogService from './services/BridgeLogService';
 import { GuildLinkSettingsRepository } from './db/repositories/GuildLinkSettingsRepository';
+import { ChannelType as DiscordChannelType } from 'discord.js';
+import { syncEchoGuard } from './services/SyncEchoGuard';
+import { createPendingStructureDelete } from './commands/interactions/StructureDeleteStore';
+import { ChannelType } from '@fluxerjs/core';
 import ReactionSyncService, {
     fluxerReactionEmoji,
 } from './services/reactionSync/ReactionSyncService';
@@ -608,6 +612,308 @@ const startFluxerClient = async ({
             }
         } catch (err) {
             logger.debug('Fluxer pins mirror error:', err);
+        }
+    });
+
+    const normalizeName = (name: string) =>
+        name.toLowerCase().replace(/\\s+/g, '-');
+
+    client.on(Events.ChannelCreate, async (channel) => {
+        try {
+            const fluxerGuildId = (channel as { guildId?: string }).guildId;
+            if (!fluxerGuildId) return;
+            if (
+                channel.type !== ChannelType.GuildText &&
+                channel.type !== ChannelType.GuildCategory
+            )
+                return;
+            const guildLink = await linkService
+                .getGuildLinkForFluxerGuild(fluxerGuildId)
+                .catch(() => null);
+            if (!guildLink) return;
+            const settings = await guildLinkSettingsRepo
+                .getOrCreate(guildLink.id)
+                .catch(() => null);
+            if (!settings?.syncChannelStructure) return;
+
+            const kind =
+                channel.type === ChannelType.GuildCategory
+                    ? 'category'
+                    : 'text';
+            const key = `fluxer:channel:create:${normalizeName((channel as { name: string }).name)}:${kind}`;
+            if (syncEchoGuard.isEcho(key)) return;
+
+            const existing = await linkService
+                .getStructureLinkByFluxerChannelId(channel.id)
+                .catch(() => null);
+            if (existing) return;
+
+            let parentDiscordId: string | null = null;
+            const channelParentId = (channel as { parentId?: string | null })
+                .parentId;
+            if (channelParentId) {
+                const parentLink = await linkService
+                    .getStructureLinkByFluxerChannelId(channelParentId)
+                    .catch(() => null);
+                if (parentLink) {
+                    parentDiscordId = parentLink.discordChannelId;
+                } else {
+                    const parent = await fluxerEntityResolver
+                        .fetchChannel(fluxerGuildId, channelParentId as string)
+                        .catch(() => null);
+                    if (parent) {
+                        const parentNorm = normalizeName(
+                            (parent as { name: string }).name
+                        );
+                        syncEchoGuard.expect(
+                            `discord:channel:create:${parentNorm}:category`
+                        );
+                        const discordGuild = await discordEntityResolver
+                            .fetchGuild(guildLink.discordGuildId)
+                            .catch(() => null);
+                        if (discordGuild) {
+                            const twinParent =
+                                await discordGuild.channels.create({
+                                    name: (parent as { name: string }).name,
+                                    type: DiscordChannelType.GuildCategory,
+                                });
+                            await linkService.createStructureLink({
+                                guildLinkId: guildLink.id,
+                                discordChannelId: twinParent.id,
+                                fluxerChannelId: parent.id,
+                                kind: 'category',
+                                origin: 'auto',
+                            });
+                            parentDiscordId = twinParent.id;
+                        }
+                    }
+                }
+            }
+
+            syncEchoGuard.expect(
+                `discord:channel:create:${normalizeName((channel as { name: string }).name)}:${kind}`
+            );
+            const discordGuild = await discordEntityResolver
+                .fetchGuild(guildLink.discordGuildId)
+                .catch(() => null);
+            if (!discordGuild) return;
+            const twin = await discordGuild.channels.create({
+                name: (channel as { name: string }).name,
+                type:
+                    kind === 'category'
+                        ? DiscordChannelType.GuildCategory
+                        : DiscordChannelType.GuildText,
+                topic:
+                    (channel as { topic?: string | null }).topic ?? undefined,
+                nsfw: (channel as { nsfw?: boolean }).nsfw ?? undefined,
+                rateLimitPerUser:
+                    (channel as { rateLimitPerUser?: number | null })
+                        .rateLimitPerUser ?? undefined,
+                parent: parentDiscordId ?? undefined,
+            });
+
+            await linkService.createStructureLink({
+                guildLinkId: guildLink.id,
+                discordChannelId: twin.id,
+                fluxerChannelId: channel.id,
+                kind,
+                origin: 'auto',
+            });
+
+            if (kind === 'text' && settings.autoLinkCreatedChannels) {
+                try {
+                    const discordWebhook =
+                        await webhookService.createDiscordWebhook(
+                            twin.id,
+                            `Fluxer Bridge Webhook for channel ${twin.id}`
+                        );
+                    const fluxerWebhook =
+                        await webhookService.createFluxerWebhook(
+                            channel.id,
+                            `Discord Bridge Webhook for channel ${channel.id}`
+                        );
+                    await linkService.createChannelLink({
+                        guildLinkId: guildLink.id,
+                        discordChannelId: twin.id,
+                        fluxerChannelId: channel.id,
+                        discordWebhookId: discordWebhook.id,
+                        discordWebhookToken: discordWebhook.token,
+                        fluxerWebhookId: fluxerWebhook.id,
+                        fluxerWebhookToken: fluxerWebhook.token,
+                    });
+                } catch (err) {
+                    logger.warn('Auto-link failed for mirrored channel:', err);
+                }
+            }
+        } catch (err) {
+            logger.debug('Fluxer channel create mirror error:', err);
+        }
+    });
+
+    client.on(Events.ChannelUpdate, async (oldChannel, newChannel) => {
+        try {
+            const fluxerGuildId2 = (newChannel as { guildId?: string }).guildId;
+            if (!fluxerGuildId2) return;
+            if (
+                newChannel.type !== ChannelType.GuildText &&
+                newChannel.type !== ChannelType.GuildCategory
+            )
+                return;
+            const link = await linkService
+                .getStructureLinkByFluxerChannelId(newChannel.id)
+                .catch(() => null);
+            if (!link) return;
+            const guildLink = await linkService
+                .getGuildLinkById(link.guildLinkId)
+                .catch(() => null);
+            if (!guildLink) return;
+            const settings = await guildLinkSettingsRepo
+                .getOrCreate(guildLink.id)
+                .catch(() => null);
+            if (!settings?.syncChannelStructure) return;
+
+            const changes: Record<string, unknown> = {};
+            if (oldChannel.name !== newChannel.name)
+                changes.name = newChannel.name;
+            if (
+                (oldChannel as { topic?: string | null }).topic !==
+                (newChannel as { topic?: string | null }).topic
+            )
+                changes.topic =
+                    (newChannel as { topic?: string | null }).topic ?? null;
+            if (
+                (oldChannel as { nsfw?: boolean }).nsfw !==
+                (newChannel as { nsfw?: boolean }).nsfw
+            )
+                changes.nsfw = (newChannel as { nsfw?: boolean }).nsfw ?? false;
+            if (
+                (oldChannel as { rateLimitPerUser?: number | null })
+                    .rateLimitPerUser !==
+                (newChannel as { rateLimitPerUser?: number | null })
+                    .rateLimitPerUser
+            )
+                changes.rateLimitPerUser =
+                    (newChannel as { rateLimitPerUser?: number | null })
+                        .rateLimitPerUser ?? null;
+            const oldParentId = (oldChannel as { parentId?: string | null })
+                .parentId;
+            const newParentId = (newChannel as { parentId?: string | null })
+                .parentId;
+            if (oldParentId !== newParentId) {
+                const parentLink = newParentId
+                    ? await linkService
+                          .getStructureLinkByFluxerChannelId(newParentId)
+                          .catch(() => null)
+                    : null;
+                changes.parent = parentLink
+                    ? parentLink.discordChannelId
+                    : null;
+            }
+
+            if (Object.keys(changes).length === 0) return;
+
+            for (const [field, value] of Object.entries(changes)) {
+                const key = `fluxer:channel:update:${newChannel.id}:${field}:${JSON.stringify(
+                    value
+                )}`;
+                if (syncEchoGuard.isEcho(key)) return;
+            }
+            for (const [field, value] of Object.entries(changes)) {
+                syncEchoGuard.expect(
+                    `discord:channel:update:${link.discordChannelId}:${field}:${JSON.stringify(
+                        value
+                    )}`
+                );
+            }
+
+            const discordChannel = await discordEntityResolver
+                .fetchChannel(guildLink.discordGuildId, link.discordChannelId)
+                .catch(() => null);
+            if (!discordChannel) return;
+            await (
+                discordChannel as { edit: (opts: unknown) => Promise<unknown> }
+            ).edit(changes);
+        } catch (err) {
+            logger.debug('Fluxer channel update mirror error:', err);
+        }
+    });
+
+    client.on(Events.ChannelDelete, async (channel) => {
+        try {
+            const fluxerGuildId = (channel as { guildId?: string }).guildId;
+            if (!fluxerGuildId) return;
+            if (
+                channel.type !== ChannelType.GuildText &&
+                channel.type !== ChannelType.GuildCategory
+            )
+                return;
+            const link = await linkService
+                .getStructureLinkByFluxerChannelId(channel.id)
+                .catch(() => null);
+            if (!link) return;
+            const guildLink = await linkService
+                .getGuildLinkById(link.guildLinkId)
+                .catch(() => null);
+            if (!guildLink) return;
+            const settings = await guildLinkSettingsRepo
+                .getOrCreate(guildLink.id)
+                .catch(() => null);
+            if (!settings?.syncChannelStructure) return;
+
+            const adminChannelId = settings.discordLogChannelId;
+            const channelName = (channel as { name: string }).name;
+
+            if (!adminChannelId) {
+                await bridgeLogService.post(
+                    guildLink.id,
+                    'warn',
+                    `Channel #${channelName} deleted on Fluxer; twin still exists on Discord (no admin channel configured)`
+                );
+                return;
+            }
+
+            const token = createPendingStructureDelete({
+                platform: 'fluxer',
+                guildLinkId: guildLink.id,
+                sourceChannelId: channel.id,
+                twinChannelId: link.discordChannelId,
+                structureLinkId: link.id,
+                channelName,
+            });
+
+            const adminChannel = await discordEntityResolver
+                .fetchChannel(guildLink.discordGuildId, adminChannelId)
+                .catch(() => null);
+            if (
+                adminChannel &&
+                (
+                    adminChannel as { isTextBased?: () => boolean }
+                ).isTextBased?.()
+            ) {
+                const { ActionRowBuilder, ButtonBuilder, ButtonStyle } =
+                    await import('discord.js');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const row = new ActionRowBuilder<any>().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`bifrost:structdelete:confirm:${token}`)
+                        .setLabel('Delete twin')
+                        .setStyle(ButtonStyle.Danger),
+                    new ButtonBuilder()
+                        .setCustomId(`bifrost:structdelete:cancel:${token}`)
+                        .setLabel('Keep')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+                await (
+                    adminChannel as {
+                        send: (opts: unknown) => Promise<unknown>;
+                    }
+                ).send({
+                    content: `Channel **#${channelName}** was deleted on Fluxer. Delete its twin on Discord?`,
+                    components: [row],
+                });
+            }
+        } catch (err) {
+            logger.debug('Fluxer channel delete mirror error:', err);
         }
     });
 
