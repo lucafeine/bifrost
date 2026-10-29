@@ -13,6 +13,7 @@ import startFluxerClient from './fluxer';
 import { DbStatsService } from './services/DbStatsService';
 import BridgeLogService from './services/BridgeLogService';
 import EmojiMapper from './services/emojiMapping/EmojiMapper';
+import ReactionSyncService from './services/reactionSync/ReactionSyncService';
 import FluxerEntityResolver from './services/entityResolver/FluxerEntityResolver';
 import DiscordEntityResolver from './services/entityResolver/DiscordEntityResolver';
 import HealthCheckService from './services/HealthCheckService';
@@ -96,6 +97,15 @@ const main = async () => {
         fluxerDirectory: fluxerEntityResolver,
     });
     const bridgeLogService = new BridgeLogService(cachedGuildLinkSettingsRepo);
+    const reactionSyncService = new ReactionSyncService({
+        linkService,
+        settingsRepo: cachedGuildLinkSettingsRepo,
+        emojiMapper,
+        discordEntityResolver,
+        fluxerEntityResolver,
+        metricsService,
+        bridgeLogService,
+    });
     const discordStatsService = new DiscordStatsService();
     const fluxerStatsService = new FluxerStatsService();
     const dbStatsService = new DbStatsService(
@@ -120,6 +130,7 @@ const main = async () => {
         dbStatsService,
         emojiMapper,
         bridgeLogService,
+        reactionSyncService,
     };
 
     const fluxerClientRef: { current: FluxerClient | null } = { current: null };
@@ -229,6 +240,7 @@ const main = async () => {
             dbStatsService,
             emojiMapper,
             bridgeLogService,
+            reactionSyncService,
         }),
         connectFluxer(),
     ]);

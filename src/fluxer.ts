@@ -47,6 +47,9 @@ import FluxerStatsService from './services/statsService/FluxerStatsService';
 import { DbStatsService } from './services/DbStatsService';
 import EmojiMapper from './services/emojiMapping/EmojiMapper';
 import BridgeLogService from './services/BridgeLogService';
+import ReactionSyncService, {
+    fluxerReactionEmoji,
+} from './services/reactionSync/ReactionSyncService';
 
 const startFluxerClient = async ({
     linkService,
@@ -61,6 +64,7 @@ const startFluxerClient = async ({
     dbStatsService,
     emojiMapper,
     bridgeLogService,
+    reactionSyncService,
 }: {
     linkService: LinkService;
     webhookService: WebhookService;
@@ -74,6 +78,7 @@ const startFluxerClient = async ({
     dbStatsService: DbStatsService;
     emojiMapper: EmojiMapper;
     bridgeLogService: BridgeLogService;
+    reactionSyncService: ReactionSyncService;
 }): Promise<Client> => {
     const clientOptions: ClientOptions = {
         intents: 0,
@@ -107,6 +112,7 @@ const startFluxerClient = async ({
     fluxerEntityResolver.setFluxerClient(client);
     fluxerStatsService.setClient(client);
     bridgeLogService.setFluxerClient(client);
+    reactionSyncService.setFluxerClient(client);
 
     const messageTransformer = new FluxerMessageTransformer(emojiMapper);
     const messageRelay = new FluxerToDiscordMessageRelay({
@@ -343,6 +349,50 @@ const startFluxerClient = async ({
         ) {
             await messageRelay.relayMessage(message);
         }
+    });
+
+    client.on(Events.MessageReactionAdd, (payload) => {
+        reactionSyncService.handleEvent({
+            platform: 'fluxer',
+            kind: 'add',
+            channelId: payload.channelId,
+            messageId: payload.messageId,
+            actorId: payload.userId,
+            emoji: fluxerReactionEmoji(payload.emoji),
+        });
+    });
+
+    client.on(Events.MessageReactionRemove, (payload) => {
+        reactionSyncService.handleEvent({
+            platform: 'fluxer',
+            kind: 'remove',
+            channelId: payload.channelId,
+            messageId: payload.messageId,
+            actorId: payload.userId,
+            emoji: fluxerReactionEmoji(payload.emoji),
+        });
+    });
+
+    client.on(Events.MessageReactionRemoveEmoji, (payload) => {
+        reactionSyncService.handleEvent({
+            platform: 'fluxer',
+            kind: 'removeEmoji',
+            channelId: payload.channelId,
+            messageId: payload.messageId,
+            actorId: null,
+            emoji: fluxerReactionEmoji(payload.emoji),
+        });
+    });
+
+    client.on(Events.MessageReactionRemoveAll, (payload) => {
+        reactionSyncService.handleEvent({
+            platform: 'fluxer',
+            kind: 'removeAll',
+            channelId: payload.channelId,
+            messageId: payload.messageId,
+            actorId: null,
+            emoji: null,
+        });
     });
 
     await client.login(FLUXER_TOKEN);

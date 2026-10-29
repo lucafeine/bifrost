@@ -36,6 +36,9 @@ import StatsDiscordCommandHandler from './commands/discord/handlers/StatsDiscord
 import { DbStatsService } from './services/DbStatsService';
 import EmojiMapper from './services/emojiMapping/EmojiMapper';
 import BridgeLogService from './services/BridgeLogService';
+import ReactionSyncService, {
+    discordReactionEmoji,
+} from './services/reactionSync/ReactionSyncService';
 
 const startDiscordClient = async ({
     linkService,
@@ -50,6 +53,7 @@ const startDiscordClient = async ({
     dbStatsService,
     emojiMapper,
     bridgeLogService,
+    reactionSyncService,
 }: {
     linkService: LinkService;
     webhookService: WebhookService;
@@ -63,14 +67,22 @@ const startDiscordClient = async ({
     dbStatsService: DbStatsService;
     emojiMapper: EmojiMapper;
     bridgeLogService: BridgeLogService;
+    reactionSyncService: ReactionSyncService;
 }): Promise<Client> => {
     const client = new Client({
         intents: [
             GatewayIntentBits.Guilds,
             GatewayIntentBits.GuildMessages,
             GatewayIntentBits.MessageContent,
+            GatewayIntentBits.GuildMessageReactions,
+            GatewayIntentBits.GuildMessageTyping,
         ],
-        partials: [Partials.Message, Partials.Channel],
+        partials: [
+            Partials.Message,
+            Partials.Channel,
+            Partials.Reaction,
+            Partials.User,
+        ],
         presence: {
             status: 'online',
             activities: [
@@ -87,6 +99,7 @@ const startDiscordClient = async ({
     discordEntityResolver.setDiscordClient(client);
     discordStatsService.setClient(client);
     bridgeLogService.setDiscordClient(client);
+    reactionSyncService.setDiscordClient(client);
 
     const messageTransformer = new DiscordMessageTransformer(emojiMapper);
     const messageRelay = new DiscordToFluxerMessageRelay({
@@ -326,6 +339,50 @@ const startDiscordClient = async ({
         ) {
             await messageRelay.relayMessage(message);
         }
+    });
+
+    client.on(Events.MessageReactionAdd, (reaction, user) => {
+        reactionSyncService.handleEvent({
+            platform: 'discord',
+            kind: 'add',
+            channelId: reaction.message.channelId,
+            messageId: reaction.message.id,
+            actorId: user.id,
+            emoji: discordReactionEmoji(reaction),
+        });
+    });
+
+    client.on(Events.MessageReactionRemove, (reaction, user) => {
+        reactionSyncService.handleEvent({
+            platform: 'discord',
+            kind: 'remove',
+            channelId: reaction.message.channelId,
+            messageId: reaction.message.id,
+            actorId: user.id,
+            emoji: discordReactionEmoji(reaction),
+        });
+    });
+
+    client.on(Events.MessageReactionRemoveEmoji, (reaction) => {
+        reactionSyncService.handleEvent({
+            platform: 'discord',
+            kind: 'removeEmoji',
+            channelId: reaction.message.channelId,
+            messageId: reaction.message.id,
+            actorId: null,
+            emoji: discordReactionEmoji(reaction),
+        });
+    });
+
+    client.on(Events.MessageReactionRemoveAll, (message) => {
+        reactionSyncService.handleEvent({
+            platform: 'discord',
+            kind: 'removeAll',
+            channelId: message.channelId,
+            messageId: message.id,
+            actorId: null,
+            emoji: null,
+        });
     });
 
     await client.login(DISCORD_TOKEN);
