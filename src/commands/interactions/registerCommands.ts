@@ -102,6 +102,16 @@ const COMMAND_DEFINITION = new SlashCommandBuilder()
     )
     .addSubcommand((sub) =>
         sub.setName('help').setDescription('List bridge commands')
+    )
+    .addSubcommandGroup((group) =>
+        group
+            .setName('structure')
+            .setDescription('Channel structure tools')
+            .addSubcommand((sub) =>
+                sub
+                    .setName('sync')
+                    .setDescription('Dry-run and apply channel tree sync')
+            )
     );
 
 const META_KEYS = new Set([
