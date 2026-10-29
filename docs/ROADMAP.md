@@ -36,7 +36,7 @@
 - `EmojiMapper` service skeleton (shared by reactions, content, emoji mirror).
 - Metrics + bridge-log plumbing.
 
-### P1 — Discord management interface · size L · plan: [05-discord-management-ui.md](./plan/05-discord-management-ui.md)
+### P1 — Discord management interface · size L · 🟡 implemented (live test pending) · plan: [05-discord-management-ui.md](./plan/05-discord-management-ui.md)
 Slash commands + interactive panels: link guild/channel, autolink, list, unlink,
 settings toggles, status. Independent of other phases — can be built in parallel.
 Replaces the painful `!b … / !b … confirm` flow on Discord (kept on Fluxer).

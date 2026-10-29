@@ -241,6 +241,7 @@ const main = async () => {
             emojiMapper,
             bridgeLogService,
             reactionSyncService,
+            guildLinkSettingsRepo: cachedGuildLinkSettingsRepo,
         }),
         connectFluxer(),
     ]);

@@ -39,6 +39,12 @@ import BridgeLogService from './services/BridgeLogService';
 import ReactionSyncService, {
     discordReactionEmoji,
 } from './services/reactionSync/ReactionSyncService';
+import { GuildLinkSettingsRepository } from './db/repositories/GuildLinkSettingsRepository';
+import InteractionRouter from './commands/interactions/InteractionRouter';
+import {
+    registerBridgeCommands,
+    registerBridgeCommandsForGuild,
+} from './commands/interactions/registerCommands';
 
 const startDiscordClient = async ({
     linkService,
@@ -54,6 +60,7 @@ const startDiscordClient = async ({
     emojiMapper,
     bridgeLogService,
     reactionSyncService,
+    guildLinkSettingsRepo,
 }: {
     linkService: LinkService;
     webhookService: WebhookService;
@@ -68,6 +75,7 @@ const startDiscordClient = async ({
     emojiMapper: EmojiMapper;
     bridgeLogService: BridgeLogService;
     reactionSyncService: ReactionSyncService;
+    guildLinkSettingsRepo: GuildLinkSettingsRepository;
 }): Promise<Client> => {
     const client = new Client({
         intents: [
@@ -109,6 +117,16 @@ const startDiscordClient = async ({
         metricsService,
         queueService,
         fluxerEntityResolver,
+    });
+
+    const interactionRouter = new InteractionRouter(client, {
+        linkService,
+        webhookService,
+        fluxerEntityResolver,
+        settingsRepo: guildLinkSettingsRepo,
+        discordStatsService,
+        fluxerStatsService,
+        dbStatsService,
     });
 
     const commandRegistry = new CommandRegistry<DiscordCommandHandler>();
@@ -154,6 +172,10 @@ const startDiscordClient = async ({
 
     client.once(Events.ClientReady, () => {
         logger.info(`Discord bot logged in as ${client.user?.tag}`);
+
+        registerBridgeCommands(client).catch((err) =>
+            logger.error('Bridge command registration failed:', err)
+        );
 
         if (queueService) {
             queueService
@@ -383,6 +405,18 @@ const startDiscordClient = async ({
             actorId: null,
             emoji: null,
         });
+    });
+
+    client.on(Events.GuildCreate, (guild) => {
+        registerBridgeCommandsForGuild(guild.id).catch((err) =>
+            logger.error('Bridge command registration failed:', err)
+        );
+    });
+
+    client.on(Events.InteractionCreate, (interaction) => {
+        interactionRouter
+            .handle(interaction)
+            .catch((err) => logger.error('Interaction router error:', err));
     });
 
     await client.login(DISCORD_TOKEN);
