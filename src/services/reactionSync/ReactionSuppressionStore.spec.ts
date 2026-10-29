@@ -22,9 +22,32 @@ describe('ReactionSuppressionStore', () => {
 
         store.reconcile('discord', 'm1', new Set());
         expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(false);
+    });
 
-        // A later reaction can be mirrored again.
-        store.reconcile('discord', 'm1', new Set(['u:🍋']));
+    it('consumes suppressions created before the reconcile cutoff', () => {
+        const store = new ReactionSuppressionStore();
+
+        store.suppress('discord', 'm1', 'u:🍋', 1_000);
+        store.consume('discord', 'm1', 1_500);
+
+        expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(false);
+    });
+
+    it('keeps suppressions created while the reconcile was running', () => {
+        const store = new ReactionSuppressionStore();
+
+        store.suppress('discord', 'm1', 'u:🍋', 2_000);
+        store.consume('discord', 'm1', 1_500);
+
+        expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(true);
+    });
+
+    it('lifts suppression when the user adds the emoji again', () => {
+        const store = new ReactionSuppressionStore();
+
+        store.suppress('discord', 'm1', 'u:🍋');
+        store.unsuppress('discord', 'm1', 'u:🍋');
+
         expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(false);
     });
 

@@ -66,9 +66,10 @@ reconcile of the paired message (`src/services/reactionSync/`): a 500 ms trailin
 per message, then one fetch of both messages and a reconciliation of the **union of real
 user reactions**. The bot only adds an emoji on a side where no real user has it, so the
 emoji set is identical on both sides without duplicate counts. Removing a reaction locally
-suppresses that mirror until the emoji disappears from the other side, so a user can get
-rid of a mirrored reaction without it bouncing back. Mirrored reactions are attributed to
-the bot; only bridge-owned reactions are ever removed.
+shields the next reconcile so the mirror does not bounce back immediately, without
+disabling it permanently (the user re-adding the emoji, or the source emoji disappearing,
+lifts the shield). Mirrored reactions are attributed to the bot; only bridge-owned
+reactions are ever removed.
 
 ### Resilience
 - Failed relays are persisted to `queued_messages` and drained every 30 s

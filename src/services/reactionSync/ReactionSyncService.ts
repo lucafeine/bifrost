@@ -24,7 +24,6 @@ import type DiscordEntityResolver from '../entityResolver/DiscordEntityResolver'
 import type FluxerEntityResolver from '../entityResolver/FluxerEntityResolver';
 import type { LinkService } from '../LinkService';
 import type MetricsService from '../MetricsService';
-import SyncEchoGuard, { syncEchoGuard } from '../SyncEchoGuard';
 import ReactionCoalescer from './ReactionCoalescer';
 import ReactionSuppressionStore from './ReactionSuppressionStore';
 import {
@@ -51,7 +50,6 @@ export interface ReactionSyncServiceOptions {
     fluxerEntityResolver: FluxerEntityResolver;
     metricsService?: MetricsService | null;
     bridgeLogService?: BridgeLogService | null;
-    echoGuard?: Pick<SyncEchoGuard, 'expect' | 'isEcho'>;
     debounceMs?: number;
 }
 
@@ -139,7 +137,8 @@ function collectFluxerBotReactions(
  * the flush fetches both sides once and reconciles the union of their **real**
  * user reactions. The bridge bot only reacts on a side when the emoji is
  * missing there (so reacting on both platforms never duplicates the emoji),
- * and only bridge-owned reactions are ever removed.
+ * and only bridge-owned reactions are ever removed. A local removal shields
+ * the next reconcile so the mirror does not bounce back immediately.
  */
 export default class ReactionSyncService {
     private readonly linkService: LinkService;
@@ -149,7 +148,6 @@ export default class ReactionSyncService {
     private readonly fluxerEntityResolver: FluxerEntityResolver;
     private readonly metricsService: MetricsService | null;
     private readonly bridgeLogService: BridgeLogService | null;
-    private readonly echoGuard: Pick<SyncEchoGuard, 'expect' | 'isEcho'>;
     private readonly coalescer: ReactionCoalescer;
     private readonly suppressions = new ReactionSuppressionStore();
     private readonly pendingRemoveAll = new Set<string>();
@@ -165,7 +163,6 @@ export default class ReactionSyncService {
         this.fluxerEntityResolver = options.fluxerEntityResolver;
         this.metricsService = options.metricsService ?? null;
         this.bridgeLogService = options.bridgeLogService ?? null;
-        this.echoGuard = options.echoGuard ?? syncEchoGuard;
         this.coalescer = new ReactionCoalescer(
             (key) => this.reconcileFromKey(key),
             options.debounceMs,
@@ -187,27 +184,32 @@ export default class ReactionSyncService {
                 ? (this.discordClient?.user?.id ?? null)
                 : (this.fluxerClient?.user?.id ?? null);
 
-        if (SyncEchoGuard.isBridgeActor(event.actorId, botId)) {
+        if (
+            event.actorId !== null &&
+            botId !== null &&
+            event.actorId === botId
+        ) {
             this.metricsService?.syncEchoSuppressed.inc({ kind: 'reaction' });
             return;
         }
 
         if (event.emoji) {
-            const echoKey = `${event.platform}:reaction:${event.kind}:${event.messageId}:${emojiKeyFromInput(event.emoji)}`;
-            if (this.echoGuard.isEcho(echoKey)) {
-                this.metricsService?.syncEchoSuppressed.inc({
-                    kind: 'reaction',
-                });
-                return;
-            }
+            const key = emojiKeyFromInput(event.emoji);
 
-            // A real user removed this reaction on this side: do not force the
-            // bot mirror back while the other side still has the emoji.
+            // A real user removed this reaction on this side: shield the next
+            // reconcile so the bot mirror does not bounce back immediately.
             if (event.kind === 'remove' || event.kind === 'removeEmoji') {
                 this.suppressions.suppress(
                     event.platform,
                     event.messageId,
-                    emojiKeyFromInput(event.emoji)
+                    key
+                );
+            } else if (event.kind === 'add') {
+                // The user re-added it themselves: mirroring may resume.
+                this.suppressions.unsuppress(
+                    event.platform,
+                    event.messageId,
+                    key
                 );
             }
         }
@@ -311,6 +313,8 @@ export default class ReactionSyncService {
         messageLink: MessageLink,
         suppressAllOn: SyncPlatform | null
     ): Promise<number> {
+        const startedAt = Date.now();
+
         const [discordMessage, fluxerMessage] = await Promise.all([
             this.discordEntityResolver.fetchMessage(
                 guildLink.discordGuildId,
@@ -370,6 +374,11 @@ export default class ReactionSyncService {
             fluxerBotReactions
         );
 
+        // The flush honored the suppressions that existed when it started:
+        // later reconciles may mirror those emojis again.
+        this.suppressions.consume('discord', discordMessage.id, startedAt);
+        this.suppressions.consume('fluxer', fluxerMessage.id, startedAt);
+
         return changes;
     }
 
@@ -382,7 +391,6 @@ export default class ReactionSyncService {
 
         for (const key of plan.toAdd) {
             const mapped = plan.desired.get(key) as MappedEmoji;
-            this.echoGuard.expect(`discord:reaction:add:${message.id}:${key}`);
             await message.react(mapped.value);
             changes++;
         }
@@ -399,9 +407,6 @@ export default class ReactionSyncService {
             const reaction = current.get(key);
             if (!reaction) continue;
 
-            this.echoGuard.expect(
-                `discord:reaction:remove:${message.id}:${key}`
-            );
             await reaction.users.remove(botId);
             changes++;
         }
@@ -418,7 +423,6 @@ export default class ReactionSyncService {
 
         for (const key of plan.toAdd) {
             const mapped = plan.desired.get(key) as MappedEmoji;
-            this.echoGuard.expect(`fluxer:reaction:add:${message.id}:${key}`);
             await message.react(mapped.value);
             changes++;
         }
@@ -427,9 +431,6 @@ export default class ReactionSyncService {
             const reaction = current.get(key);
             if (!reaction) continue;
 
-            this.echoGuard.expect(
-                `fluxer:reaction:remove:${message.id}:${key}`
-            );
             await message.removeReaction(reaction.emojiIdentifier);
             changes++;
         }
