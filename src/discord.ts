@@ -672,28 +672,34 @@ const startDiscordClient = async ({
                     .catch(() => null);
                 if (parentLink) {
                     parentFluxerId = parentLink.fluxerChannelId;
-                } else if (channel.parent) {
-                    const parent = channel.parent;
-                    const parentNorm = normalizeName(parent.name);
-                    syncEchoGuard.expect(
-                        `fluxer:channel:create:${parentNorm}:category`
-                    );
-                    const fluxerGuild = await fluxerEntityResolver
-                        .fetchGuild(guildLink.fluxerGuildId)
-                        .catch(() => null);
-                    if (fluxerGuild) {
-                        const twinParent = await fluxerGuild.createChannel({
-                            name: parent.name,
-                            type: FluxerChannelType.GuildCategory,
-                        });
-                        await linkService.createStructureLink({
-                            guildLinkId: guildLink.id,
-                            discordChannelId: parent.id,
-                            fluxerChannelId: twinParent.id,
-                            kind: 'category',
-                            origin: 'auto',
-                        });
-                        parentFluxerId = twinParent.id;
+                } else {
+                    const parent =
+                        channel.parent ??
+                        (await channel.guild.channels
+                            .fetch(channel.parentId)
+                            .catch(() => null));
+                    if (parent) {
+                        const parentNorm = normalizeName(parent.name);
+                        syncEchoGuard.expect(
+                            `fluxer:channel:create:${parentNorm}:category`
+                        );
+                        const fluxerGuild = await fluxerEntityResolver
+                            .fetchGuild(guildLink.fluxerGuildId)
+                            .catch(() => null);
+                        if (fluxerGuild) {
+                            const twinParent = await fluxerGuild.createChannel({
+                                name: parent.name,
+                                type: FluxerChannelType.GuildCategory,
+                            });
+                            await linkService.createStructureLink({
+                                guildLinkId: guildLink.id,
+                                discordChannelId: parent.id,
+                                fluxerChannelId: twinParent.id,
+                                kind: 'category',
+                                origin: 'auto',
+                            });
+                            parentFluxerId = twinParent.id;
+                        }
                     }
                 }
             }
