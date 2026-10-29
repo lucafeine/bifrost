@@ -41,7 +41,7 @@ Slash commands + interactive panels: link guild/channel, autolink, list, unlink,
 settings toggles, status. Independent of other phases — can be built in parallel.
 Replaces the painful `!b … / !b … confirm` flow on Discord (kept on Fluxer).
 
-### P2 — Reactions sync · size M · plan: [01-reactions-sync.md](./plan/01-reactions-sync.md)
+### P2 — Reactions sync · size M · 🟡 implemented (live test pending) · plan: [01-reactions-sync.md](./plan/01-reactions-sync.md)
 Add/remove/emoji-remove/remove-all mirrored both ways on linked messages.
 Custom + unicode emojis via `EmojiMapper`.
 

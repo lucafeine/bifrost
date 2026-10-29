@@ -170,7 +170,28 @@ reactions retry inline with the existing `fluxerApiGuard` backoff awareness.
 - [ ] Bursts of 50+ reactions on one message cause ≤ 2 fetches after debounce.
 - [ ] Toggling `syncReactions` off stops mirroring within the settings cache TTL.
 
-## 10. Open questions
+## 10. Implementation notes (as landed)
+
+- Strategy is **reconcile-on-flush**, not per-event bookkeeping: every reaction event
+  (add/remove/removeEmoji/removeAll) only schedules a trailing debounce (500 ms) per
+  source message; the flush fetches the source + target messages once and diffs the
+  aggregate emoji sets (source reactions vs bridge-owned `me` reactions on the target).
+  Bursts therefore cost at most 2 fetches, and the mirror is self-healing.
+- Echo prevention is belt-and-braces: events authored by the bridge bot are skipped
+  (`SyncEchoGuard.isBridgeActor`) and each target action reserves an echo key *before*
+  the API call.
+- Only **bridge-owned** reactions are ever removed on the target (`me` flag; never
+  `removeAll`), so real users' reactions are preserved. Unmapped custom emojis are
+  skipped (reactions cannot carry a fallback image).
+- `syncReactions` is read through the cached settings repository (30 s TTL), so toggling
+  it off stops mirroring within the TTL.
+- Metrics: `bifrost_sync_events_total{kind="reaction",direction,result}` and
+  `bifrost_sync_echo_suppressed_total{kind="reaction"}`. Errors are also posted to the
+  bridge log channels when configured.
+- Unit tests cover the coalescer (debounce, in-flight deferral, errors) and the emoji
+  key/diff logic. Live end-to-end verification (two bots) is still pending.
+
+## 11. Open questions
 
 - Do we want an optional "reaction summary" line (e.g. `🍋 Alice, Bob`) instead of a real
   reaction when the emoji can't be mirrored? Cheap to add later; skip for now.

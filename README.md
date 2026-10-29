@@ -24,7 +24,7 @@ database, which is what allows edits and deletions to be mirrored as well.
   automatic name matching (`!b autolink`).
 - Sync messages both ways: content, replies (rendered as quotes), attachments, stickers,
   embeds, polls (Discord → Fluxer) and join messages.
-- Mirror edits and deletions.
+- Mirror edits, deletions and reactions.
 - Survive outages: failed relays are queued and replayed when the platform comes back.
 - Optional Prometheus metrics, health-check pings and web dashboard.
 - Customizable command prefix and per-deployment settings.

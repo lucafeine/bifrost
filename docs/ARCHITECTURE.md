@@ -60,6 +60,14 @@ Fluxer message ──┘   (normalize, emoji)   └─▶ Discord webhook messag
   (`src/services/WebhookService.ts:121`, `:268`).
 - `messageDelete` → resolve the paired message via `message_links` and delete it.
 
+### Reactions (P2)
+`messageReactionAdd/Remove/RemoveEmoji/RemoveAll` on either side schedule a coalesced
+reconcile of the paired message (`src/services/reactionSync/`): a 500 ms trailing debounce
+per message, then one fetch of source + target messages, emoji mapping through
+`EmojiMapper`, and a diff against the bridge-owned (`me`) reactions on the target.
+Mirrored reactions are attributed to the bot; only bridge-owned reactions are ever
+removed.
+
 ### Resilience
 - Failed relays are persisted to `queued_messages` and drained every 30 s
   (`src/services/MessageQueueService.ts:50-185`).
@@ -94,7 +102,7 @@ Next free number: **00004**.
 | Join messages | ✅ rendered as text |
 | Polls | ⚠️ Discord→Fluxer only, as formatted text |
 | Forwarded messages | ⚠️ Discord→Fluxer only |
-| **Reactions** | ❌ |
+| **Reactions** | ✅ both ways (mirrored as the bot; emoji-set parity, not per-user counts) |
 | **Typing indicators** | ❌ |
 | **Pins** | ❌ |
 | **Channels (create/rename/delete/move)** | ❌ (manual link only) |
@@ -126,12 +134,11 @@ Next free number: **00004**.
 - **NO interactions/components** — no buttons, select menus, modals, or slash commands.
 
 ### Discord (`discord.js@14.25`)
-- Intents currently enabled: `Guilds`, `GuildMessages`, `MessageContent` + partials
-  `Message`, `Channel` (`src/discord.ts:61-67`).
-- Needed for the roadmap: `GuildMessageReactions`, `GuildMessageTyping`,
-  `GuildModeration` (all **non-privileged**), `GuildInvites`; `GuildMembers` is
-  **privileged** (only needed for the future membership/moderation sync phase).
-- Partial `Reaction`, `User` will be required for reaction events on uncached messages.
+- Intents currently enabled: `Guilds`, `GuildMessages`, `MessageContent`,
+  `GuildMessageReactions`, `GuildMessageTyping` + partials `Message`, `Channel`,
+  `Reaction`, `User` (`src/discord.ts`).
+- Needed for the roadmap: `GuildModeration` (non-privileged), `GuildInvites`; `GuildMembers`
+  is **privileged** (only needed for the future membership/moderation sync phase).
 - Full interactions support (slash commands, buttons, selects, modals).
 
 ## 7. Known limitations (accepted)
@@ -153,5 +160,6 @@ Next free number: **00004**.
 | 2026-10 | Role sync scope = **structure only** (name/color/position mirror + mention rendering). Membership sync is deferred to a future identity-linking phase. |
 | 2026-10 | Management UI lives on **Discord** (slash commands + components). Fluxer keeps prefix commands (`!b`), as Fluxer has no interaction model. |
 | 2026-10 | P0 foundations landed: `guild_link_settings` toggles (defaults = today's behavior), `SyncEchoGuard`, `EmojiMapper`, bridge log + sync metrics. No user-visible change yet. |
+| 2026-10 | P2 reactions landed as **reconcile-on-flush** (trailing debounce per message, aggregate emoji-set diff) rather than per-event bookkeeping: bursts cost ≤ 2 fetches, the mirror is self-healing, and counts stay coherent without tracking individual users. |
 | 2026-10 | `SyncEchoGuard` uses a small internal TTL map with an injectable clock instead of `lru-cache` (whose TTL clock is not injectable → non-deterministic tests). |
 | 2026-10 | Test suite introduced with vitest (`*.spec.ts`, excluded from the build). Runs without live API access: SDK-type-checked code + unit tests + sqlite migration tests. |
