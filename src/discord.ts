@@ -638,6 +638,9 @@ const startDiscordClient = async ({
 
     client.on(Events.ChannelCreate, async (channel) => {
         try {
+            logger.info(
+                `Discord ChannelCreate: ${channel.id} ${'name' in channel ? channel.name : ''} type=${'type' in channel ? channel.type : ''}`
+            );
             if (!('guild' in channel) || !channel.guild) return;
             if (
                 channel.type !== ChannelType.GuildText &&
@@ -647,11 +650,21 @@ const startDiscordClient = async ({
             const guildLink = await linkService
                 .getGuildLinkForDiscordGuild(channel.guild.id)
                 .catch(() => null);
-            if (!guildLink) return;
+            if (!guildLink) {
+                logger.warn(
+                    `Discord ChannelCreate: no guild link for ${channel.guild.id}`
+                );
+                return;
+            }
             const settings = await guildLinkSettingsRepo
                 .getOrCreate(guildLink.id)
                 .catch(() => null);
-            if (!settings?.syncChannelStructure) return;
+            if (!settings?.syncChannelStructure) {
+                logger.warn(
+                    `Discord ChannelCreate: syncChannelStructure disabled for ${guildLink.id}`
+                );
+                return;
+            }
 
             const kind =
                 channel.type === ChannelType.GuildCategory
@@ -735,7 +748,12 @@ const startDiscordClient = async ({
             const fluxerGuild = await fluxerEntityResolver
                 .fetchGuild(guildLink.fluxerGuildId)
                 .catch(() => null);
-            if (!fluxerGuild) return;
+            if (!fluxerGuild) {
+                logger.error(
+                    `Discord ChannelCreate: could not fetch Fluxer guild ${guildLink.fluxerGuildId}`
+                );
+                return;
+            }
             const twin = await fluxerGuild.createChannel({
                 name: channel.name,
                 type:
@@ -790,7 +808,7 @@ const startDiscordClient = async ({
                 `➕ #${channel.name} mirrored to Fluxer`
             );
         } catch (err) {
-            logger.debug('Discord channel create mirror error:', err);
+            logger.error('Discord channel create mirror error:', err);
         }
     });
 
