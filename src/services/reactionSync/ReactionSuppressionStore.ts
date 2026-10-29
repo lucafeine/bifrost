@@ -1,22 +1,18 @@
 import { SyncPlatform } from '../emojiMapping/EmojiMapper';
 
-interface SuppressionEntry {
-    createdAt: number;
-}
-
 /**
- * Remembers emojis whose bot mirror was removed by a real user on a side.
+ * Remembers emojis whose bot mirror must stay removed on a side, because a
+ * real user removed the reaction there (or a moderator cleared it).
  *
- * A suppression only shields the next reconcile of that message: it prevents
- * the mirror from bouncing back right after the user removed it, without
- * disabling the emoji forever. Entries older than the current reconcile are
- * consumed; a user who adds the emoji again also lifts the suppression.
+ * A veto is durable: it shields *every* later reconcile of that message so the
+ * mirror cannot bounce back, and is lifted only when
+ * - a real user on that side adds the emoji again ({@link unsuppress}), or
+ * - the emoji disappears from the other side's real user reactions
+ *   ({@link reconcile}).
  */
 export default class ReactionSuppressionStore {
-    private readonly entries = new Map<
-        string,
-        Map<string, Map<string, SuppressionEntry>>
-    >();
+    /** platform → message id → vetoed emoji keys. */
+    private readonly entries = new Map<string, Map<string, Set<string>>>();
     private count = 0;
 
     constructor(private readonly max = 10_000) {}
@@ -24,35 +20,29 @@ export default class ReactionSuppressionStore {
     suppress(
         platform: SyncPlatform,
         messageId: string,
-        emojiKey: string,
-        now = Date.now()
+        emojiKey: string
     ): void {
         const messages =
-            this.entries.get(platform) ??
-            new Map<string, Map<string, SuppressionEntry>>();
+            this.entries.get(platform) ?? new Map<string, Set<string>>();
         this.entries.set(platform, messages);
 
-        const keys =
-            messages.get(messageId) ?? new Map<string, SuppressionEntry>();
+        const keys = messages.get(messageId) ?? new Set<string>();
         messages.set(messageId, keys);
 
         if (!keys.has(emojiKey)) {
-            keys.set(emojiKey, { createdAt: now });
+            keys.add(emojiKey);
             this.count++;
             this.trim();
-        } else {
-            keys.get(emojiKey)!.createdAt = now;
         }
     }
 
     suppressMany(
         platform: SyncPlatform,
         messageId: string,
-        emojiKeys: Iterable<string>,
-        now = Date.now()
+        emojiKeys: Iterable<string>
     ): void {
         for (const key of emojiKeys) {
-            this.suppress(platform, messageId, key, now);
+            this.suppress(platform, messageId, key);
         }
     }
 
@@ -82,7 +72,9 @@ export default class ReactionSuppressionStore {
     }
 
     /**
-     * Drops suppressions whose emoji is no longer present on the source side.
+     * Drops suppressions whose emoji is no longer present on the source side:
+     * the veto is lifted once the mirrored emoji disappears from the other
+     * platform's real user reactions.
      */
     reconcile(
         platform: SyncPlatform,
@@ -93,28 +85,8 @@ export default class ReactionSuppressionStore {
         const keys = messages?.get(messageId);
         if (!messages || !keys) return;
 
-        for (const key of [...keys.keys()]) {
+        for (const key of [...keys]) {
             if (sourceKeys.has(key)) continue;
-            keys.delete(key);
-            this.count--;
-        }
-
-        if (keys.size === 0) messages.delete(messageId);
-        if (messages.size === 0) this.entries.delete(platform);
-    }
-
-    /**
-     * Consumes entries created before `cutoff`: the reconcile that follows a
-     * removal has applied the suppression, so a later reconcile may mirror the
-     * emoji again.
-     */
-    consume(platform: SyncPlatform, messageId: string, cutoff: number): void {
-        const messages = this.entries.get(platform);
-        const keys = messages?.get(messageId);
-        if (!messages || !keys) return;
-
-        for (const [key, entry] of [...keys]) {
-            if (entry.createdAt > cutoff) continue;
             keys.delete(key);
             this.count--;
         }

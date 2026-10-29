@@ -1,6 +1,8 @@
 import { Channel, Client, Guild, GuildEmoji, Message } from 'discord.js';
 import NodeCache from 'node-cache';
-import EntityResolver from '../entityResolver/EntityResolver';
+import EntityResolver, {
+    FetchMessageOptions,
+} from '../entityResolver/EntityResolver';
 
 export default class DiscordEntityResolver implements EntityResolver<
     Guild,
@@ -58,7 +60,8 @@ export default class DiscordEntityResolver implements EntityResolver<
     async fetchMessage(
         guildOrId: string | Guild,
         channelOrId: string | Channel,
-        messageId: string
+        messageId: string,
+        options?: FetchMessageOptions
     ): Promise<Message<boolean>> {
         this.ensureClient();
 
@@ -71,7 +74,11 @@ export default class DiscordEntityResolver implements EntityResolver<
             throw new Error('Discord channel not found or not text-based');
         }
 
-        return await channel.messages.fetch(messageId);
+        // Without `force`, discord.js returns the cached message when present,
+        // which carries stale reaction state during event bursts.
+        return options?.force
+            ? await channel.messages.fetch({ message: messageId, force: true })
+            : await channel.messages.fetch(messageId);
     }
 
     async fetchEmojis(guildOrId: string | Guild): Promise<GuildEmoji[]> {

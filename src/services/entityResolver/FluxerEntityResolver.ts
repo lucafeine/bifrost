@@ -72,6 +72,7 @@ export default class FluxerEntityResolver implements EntityResolver<
         channelOrId: string | Channel,
         messageId: string
     ): Promise<Message> {
+        // Always fetched from the API (never served from cache).
         const channel =
             typeof channelOrId === 'string'
                 ? await this.fetchChannel(guildOrId, channelOrId)

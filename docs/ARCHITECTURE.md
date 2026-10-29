@@ -63,12 +63,15 @@ Fluxer message ──┘   (normalize, emoji)   └─▶ Discord webhook messag
 ### Reactions (P2)
 `messageReactionAdd/Remove/RemoveEmoji/RemoveAll` on either side schedule a coalesced
 reconcile of the paired message (`src/services/reactionSync/`): a 500 ms trailing debounce
-per message, then one fetch of both messages and a reconciliation of the **union of real
-user reactions**. The bot only adds an emoji on a side where no real user has it, so the
-emoji set is identical on both sides without duplicate counts. Removing a reaction locally
-shields the next reconcile so the mirror does not bounce back immediately, without
-disabling it permanently (the user re-adding the emoji, or the source emoji disappearing,
-lifts the shield). Mirrored reactions are attributed to the bot; only bridge-owned
+per message (bounded by a max wait so continuous bursts still make progress), then one
+fresh fetch of both messages and a reconciliation of the **union of real user reactions**.
+The bot only adds an emoji on a side where no real user has it, so the emoji set is
+identical on both sides without duplicate counts. Removing a reaction locally is a durable
+veto: the mirror stays off on that side until the emoji disappears from the other side or a
+local user re-adds it (a clear-all applies the same veto to the current emoji set), so it
+never bounces back on a later event. Reconciles of the same pair are serialized whatever
+side triggered them, and each add/remove is applied independently so one failed call cannot
+strand the rest of the plan. Mirrored reactions are attributed to the bot; only bridge-owned
 reactions are ever removed.
 
 ### Resilience
@@ -164,5 +167,6 @@ Next free number: **00004**.
 | 2026-10 | Management UI lives on **Discord** (slash commands + components). Fluxer keeps prefix commands (`!b`), as Fluxer has no interaction model. |
 | 2026-10 | P0 foundations landed: `guild_link_settings` toggles (defaults = today's behavior), `SyncEchoGuard`, `EmojiMapper`, bridge log + sync metrics. No user-visible change yet. |
 | 2026-10 | P2 reactions landed as **reconcile-on-flush** (trailing debounce per message, union of real user reactions from both sides) rather than per-event bookkeeping: bursts cost ≤ 2 fetches, the emoji set converges without duplicates, and removals propagate correctly. |
+| 2026-10 | P2 hardening after live testing: reconciles of the same pair are serialized across both platform keys (bursts on both sides no longer race), messages are fetched fresh (Discord cache was stale during bursts), local removals are a **durable** veto (no more bounce-back), and each add/remove is applied independently so one failed call cannot strand the plan. |
 | 2026-10 | `SyncEchoGuard` uses a small internal TTL map with an injectable clock instead of `lru-cache` (whose TTL clock is not injectable → non-deterministic tests). |
 | 2026-10 | Test suite introduced with vitest (`*.spec.ts`, excluded from the build). Runs without live API access: SDK-type-checked code + unit tests + sqlite migration tests. |

@@ -182,11 +182,12 @@ reactions retry inline with the existing `fluxerApiGuard` backoff awareness.
 - The bridge bot's own reaction is excluded from "user reactions" everywhere
   (`count - (me ? 1 : 0)`); without that, the mirror kept its own emoji alive on the
   source and removals never propagated (fixed after live testing).
-- A user removal is respected locally: removing a reaction on a side shields the **next
-  reconcile** of that message, so the bot mirror does not bounce back immediately. The
-  shield is consumed after that reconcile (and lifted early if the user re-adds the emoji
-  or the source emoji disappears), so mirroring is never disabled permanently. `removeAll`
-  applies the same shield to the current emoji set.
+- A user removal is respected locally and durably: removing a reaction on a side vetoes the
+  bot mirror **there** for as long as the emoji stays on the other side, so the mirror can
+  never bounce back on a later event (the previous one-shot shield was consumed by the next
+  reconcile and resurrected the emoji). The veto is lifted only when the user re-adds the
+  emoji or the source emoji disappears. `removeAll` applies the same veto to the current
+  emoji set.
 - Echo prevention for reactions relies on the **actor check**: events authored by the
   bridge bot are skipped. The `SyncEchoGuard` key reservations are not used for reactions
   (they swallowed real user events during reaction bursts); the guard remains available for
@@ -200,9 +201,12 @@ reactions retry inline with the existing `fluxerApiGuard` backoff awareness.
 - Metrics: `bifrost_sync_events_total{kind="reaction",direction,result}` and
   `bifrost_sync_echo_suppressed_total{kind="reaction"}`. Errors are also posted to the
   bridge log channels when configured.
-- Unit tests cover the coalescer (debounce, in-flight deferral, errors), the emoji
-  key/diff logic and the user-reaction count invariant. Live end-to-end verification is
-  in progress.
+- Unit tests cover the coalescer (debounce, max wait, in-flight deferral, explicit retry
+  delays, errors), the suppression store (durable veto, lift conditions), the emoji key/diff
+  logic and the user-reaction count invariant, plus the service end-to-end with fakes
+  (mirror/stand-in rule, removal propagation, no bounce-back, clear-all veto, pair
+  serialization, per-call error tolerance, bot echo skip, missing-link retry). Live
+  end-to-end verification is in progress.
 
 ## 11. Open questions
 

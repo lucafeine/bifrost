@@ -91,4 +91,35 @@ describe('ReactionCoalescer', () => {
         expect(errors).toHaveLength(1);
         expect((errors[0] as Error).message).toBe('boom');
     });
+
+    it('flushes under continuous scheduling once the max wait elapses', async () => {
+        const flushed: string[] = [];
+        const coalescer = new ReactionCoalescer(async (key) => {
+            flushed.push(key);
+        }, 500);
+
+        // One schedule every 100 ms keeps resetting the trailing debounce;
+        // without a max wait the flush would starve forever.
+        for (let i = 0; i < 25; i++) {
+            coalescer.schedule('discord:1');
+            await vi.advanceTimersByTimeAsync(100);
+        }
+
+        expect(flushed.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('honors an explicit delay when scheduling retries', async () => {
+        const flushed: string[] = [];
+        const coalescer = new ReactionCoalescer(async (key) => {
+            flushed.push(key);
+        }, 500);
+
+        coalescer.schedule('discord:1', 1_500);
+
+        await vi.advanceTimersByTimeAsync(1_499);
+        expect(flushed).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(flushed).toEqual(['discord:1']);
+    });
 });

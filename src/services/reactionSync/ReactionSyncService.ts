@@ -32,15 +32,40 @@ import {
     emojiKeyFromMapped,
 } from './emojiKey';
 import { countUserReactions } from './reactionCount';
+import { isTolerableReactionError } from './reactionErrors';
 import { ReactionEmojiInput, ReactionEvent } from './types';
 
 type Direction = 'discord_to_fluxer' | 'fluxer_to_discord';
+
+/**
+ * - `applied`: the pair was reconciled.
+ * - `deferred`: the same pair is already being reconciled (triggered from the
+ *   other platform's key); the work is folded into that run.
+ * - `retry`: nothing to reconcile *yet* (message link not written, transient
+ *   error) — worth another attempt.
+ * - `skipped`: nothing to reconcile (feature off, unusable state).
+ */
+type ReconcileOutcome = 'applied' | 'deferred' | 'retry' | 'skipped';
 
 interface ReactionPlan {
     desired: Map<string, MappedEmoji>;
     toAdd: string[];
     toRemove: string[];
 }
+
+/** Reconcile state of one message pair (both platform keys map onto it). */
+interface PairFlushState {
+    running: boolean;
+    again: boolean;
+    cleared: Set<SyncPlatform>;
+}
+
+/**
+ * Delays before re-attempting a reconcile whose message link is not (yet) in
+ * the database: the link is written after the relay round-trip, so a reaction
+ * on a just-posted message can beat it.
+ */
+const RETRY_DELAYS_MS = [1_000, 4_000];
 
 export interface ReactionSyncServiceOptions {
     linkService: LinkService;
@@ -133,12 +158,19 @@ function collectFluxerBotReactions(
 /**
  * Mirrors reactions between paired messages (P2).
  *
- * Every reaction event only schedules a trailing debounce per source message;
- * the flush fetches both sides once and reconciles the union of their **real**
- * user reactions. The bridge bot only reacts on a side when the emoji is
- * missing there (so reacting on both platforms never duplicates the emoji),
- * and only bridge-owned reactions are ever removed. A local removal shields
- * the next reconcile so the mirror does not bounce back immediately.
+ * Every reaction event only schedules a trailing debounce per source message
+ * (bounded by a max wait so continuous bursts still make progress); the flush
+ * fetches both sides fresh and reconciles the union of their **real** user
+ * reactions. The bridge bot only reacts on a side when the emoji is missing
+ * there (so reacting on both platforms never duplicates the emoji), and only
+ * bridge-owned reactions are ever removed.
+ *
+ * A local removal is a durable veto: the mirror stays off on that side until
+ * the emoji disappears from the other side or a local user re-adds it, so it
+ * can never bounce back on a later event. Reconciles of the same pair are
+ * serialized no matter which platform's key triggered them (bursts on both
+ * sides would otherwise race each other), and every add/remove is applied
+ * independently so one failed call cannot strand the rest of the plan.
  */
 export default class ReactionSyncService {
     private readonly linkService: LinkService;
@@ -151,6 +183,8 @@ export default class ReactionSyncService {
     private readonly coalescer: ReactionCoalescer;
     private readonly suppressions = new ReactionSuppressionStore();
     private readonly pendingRemoveAll = new Set<string>();
+    private readonly retryAttempts = new Map<string, number>();
+    private readonly pairStates = new Map<string, PairFlushState>();
 
     private discordClient: DiscordClient | null = null;
     private fluxerClient: FluxerClient | null = null;
@@ -196,8 +230,9 @@ export default class ReactionSyncService {
         if (event.emoji) {
             const key = emojiKeyFromInput(event.emoji);
 
-            // A real user removed this reaction on this side: shield the next
-            // reconcile so the bot mirror does not bounce back immediately.
+            // A real user removed this reaction on this side: veto the mirror
+            // there so it cannot bounce back. The veto is lifted when a local
+            // user re-adds the emoji or the other side stops reacting with it.
             if (event.kind === 'remove' || event.kind === 'removeEmoji') {
                 this.suppressions.suppress(
                     event.platform,
@@ -226,15 +261,39 @@ export default class ReactionSyncService {
         const platform = key.slice(0, separator) as SyncPlatform;
         const messageId = key.slice(separator + 1);
 
-        const suppressAll = this.pendingRemoveAll.delete(key);
-        await this.reconcile(platform, messageId, suppressAll);
+        // Peek instead of consuming: the clear-all survives retries and is
+        // only dropped once the pair was actually reconciled (or handed over
+        // to a reconcile that is already running).
+        const suppressAllOn: SyncPlatform | null = this.pendingRemoveAll.has(
+            key
+        )
+            ? platform
+            : null;
+
+        const outcome = await this.reconcile(
+            platform,
+            messageId,
+            suppressAllOn
+        );
+
+        if (outcome === 'retry') {
+            const attempt = (this.retryAttempts.get(key) ?? 0) + 1;
+            if (attempt <= RETRY_DELAYS_MS.length) {
+                this.retryAttempts.set(key, attempt);
+                this.coalescer.schedule(key, RETRY_DELAYS_MS[attempt - 1]);
+                return;
+            }
+        }
+
+        this.retryAttempts.delete(key);
+        this.pendingRemoveAll.delete(key);
     }
 
     private async reconcile(
         platform: SyncPlatform,
         messageId: string,
-        suppressAll = false
-    ): Promise<void> {
+        suppressAllOn: SyncPlatform | null
+    ): Promise<ReconcileOutcome> {
         const direction: Direction =
             platform === 'discord' ? 'discord_to_fluxer' : 'fluxer_to_discord';
         let guildLinkId: string | null = null;
@@ -249,19 +308,20 @@ export default class ReactionSyncService {
                           messageId
                       );
             if (!messageLink) {
-                // Not a bridged message (predates the bridge or was never relayed).
-                return;
+                // Not a bridged message (predates the bridge, was never
+                // relayed, or the relay has not written the link yet).
+                return 'retry';
             }
 
             const channelLink = await this.linkService.getChannelLinkById(
                 messageLink.channelLinkId
             );
-            if (!channelLink) return;
+            if (!channelLink) return 'skipped';
 
             const guildLink = await this.linkService.getGuildLinkById(
                 messageLink.guildLinkId
             );
-            if (!guildLink) return;
+            if (!guildLink) return 'skipped';
             guildLinkId = guildLink.id;
 
             const settings = await this.settingsRepo.getOrCreate(guildLink.id);
@@ -271,22 +331,39 @@ export default class ReactionSyncService {
                     direction,
                     result: 'skipped',
                 });
-                return;
+                return 'skipped';
             }
 
-            const changes = await this.reconcilePair(
+            const result = await this.reconcilePairThroughGate(
                 guildLink,
                 channelLink,
                 messageLink,
-                suppressAll ? platform : null
+                suppressAllOn
             );
+            if (result.deferred) return 'deferred';
 
             this.metricsService?.syncEvents.inc({
                 kind: 'reaction',
                 direction,
-                result: changes > 0 ? 'ok' : 'skipped',
+                result: result.changes > 0 ? 'ok' : 'skipped',
             });
+            return 'applied';
         } catch (error) {
+            if (isTolerableReactionError(error)) {
+                // The pair vanished under us (message deleted, ...): nothing
+                // left to reconcile.
+                logger.debug(
+                    'Reaction sync: skipping reconcile, pair is gone:',
+                    error
+                );
+                this.metricsService?.syncEvents.inc({
+                    kind: 'reaction',
+                    direction,
+                    result: 'skipped',
+                });
+                return 'skipped';
+            }
+
             logger.error('Reaction sync failed:', error);
             this.metricsService?.syncEvents.inc({
                 kind: 'reaction',
@@ -304,6 +381,59 @@ export default class ReactionSyncService {
                         logger.error('Bridge log post failed:', logError)
                     );
             }
+            // Likely transient: retry so the suppressions carried by this
+            // flush are not lost.
+            return 'retry';
+        }
+    }
+
+    /**
+     * Runs {@link reconcilePair} under a per-pair gate. Both platform keys of a
+     * pair resolve to the same message link, so their flushes must never run
+     * concurrently: a flush that arrives while the pair is being reconciled is
+     * folded into another iteration of the running one.
+     */
+    private async reconcilePairThroughGate(
+        guildLink: GuildLink,
+        channelLink: ChannelLink,
+        messageLink: MessageLink,
+        suppressAllOn: SyncPlatform | null
+    ): Promise<{ deferred: true } | { deferred: false; changes: number }> {
+        const pairKey = messageLink.id;
+        let state = this.pairStates.get(pairKey);
+        if (!state) {
+            state = { running: false, again: false, cleared: new Set() };
+            this.pairStates.set(pairKey, state);
+        }
+
+        if (suppressAllOn) state.cleared.add(suppressAllOn);
+
+        if (state.running) {
+            state.again = true;
+            return { deferred: true };
+        }
+
+        state.running = true;
+        try {
+            let changes = 0;
+            do {
+                state.again = false;
+                const cleared = state.cleared;
+                state.cleared = new Set();
+                changes = await this.reconcilePair(
+                    guildLink,
+                    channelLink,
+                    messageLink,
+                    cleared
+                );
+            } while (state.again);
+
+            return { deferred: false, changes };
+        } finally {
+            state.running = false;
+            // Safe: from the `while` check above up to here there is no await,
+            // so nothing can have set `again` in between.
+            this.pairStates.delete(pairKey);
         }
     }
 
@@ -311,20 +441,20 @@ export default class ReactionSyncService {
         guildLink: GuildLink,
         channelLink: ChannelLink,
         messageLink: MessageLink,
-        suppressAllOn: SyncPlatform | null
+        cleared: Set<SyncPlatform>
     ): Promise<number> {
-        const startedAt = Date.now();
-
         const [discordMessage, fluxerMessage] = await Promise.all([
             this.discordEntityResolver.fetchMessage(
                 guildLink.discordGuildId,
                 channelLink.discordChannelId,
-                messageLink.discordMessageId
+                messageLink.discordMessageId,
+                { force: true }
             ),
             this.fluxerEntityResolver.fetchMessage(
                 guildLink.fluxerGuildId,
                 channelLink.fluxerChannelId,
                 messageLink.fluxerMessageId
+                // Fluxer's fetch always goes to the API, no force needed.
             ),
         ]);
 
@@ -348,7 +478,7 @@ export default class ReactionSyncService {
             discordMessage.id,
             discordUserKeys,
             discordBotReactions.keys(),
-            suppressAllOn === 'discord'
+            cleared.has('discord')
         );
         const fluxerPlan = await this.planReactions(
             discordUserEmojis,
@@ -359,7 +489,7 @@ export default class ReactionSyncService {
             fluxerMessage.id,
             fluxerUserKeys,
             fluxerBotReactions.keys(),
-            suppressAllOn === 'fluxer'
+            cleared.has('fluxer')
         );
 
         let changes = 0;
@@ -374,11 +504,6 @@ export default class ReactionSyncService {
             fluxerBotReactions
         );
 
-        // The flush honored the suppressions that existed when it started:
-        // later reconciles may mirror those emojis again.
-        this.suppressions.consume('discord', discordMessage.id, startedAt);
-        this.suppressions.consume('fluxer', fluxerMessage.id, startedAt);
-
         return changes;
     }
 
@@ -391,8 +516,12 @@ export default class ReactionSyncService {
 
         for (const key of plan.toAdd) {
             const mapped = plan.desired.get(key) as MappedEmoji;
-            await message.react(mapped.value);
-            changes++;
+            try {
+                await message.react(mapped.value);
+                changes++;
+            } catch (error) {
+                this.reportReactionError('mirror add', error);
+            }
         }
 
         const botId = this.discordClient?.user?.id ?? null;
@@ -407,8 +536,12 @@ export default class ReactionSyncService {
             const reaction = current.get(key);
             if (!reaction) continue;
 
-            await reaction.users.remove(botId);
-            changes++;
+            try {
+                await reaction.users.remove(botId);
+                changes++;
+            } catch (error) {
+                this.reportReactionError('mirror remove', error);
+            }
         }
 
         return changes;
@@ -423,19 +556,39 @@ export default class ReactionSyncService {
 
         for (const key of plan.toAdd) {
             const mapped = plan.desired.get(key) as MappedEmoji;
-            await message.react(mapped.value);
-            changes++;
+            try {
+                await message.react(mapped.value);
+                changes++;
+            } catch (error) {
+                this.reportReactionError('mirror add', error);
+            }
         }
 
         for (const key of plan.toRemove) {
             const reaction = current.get(key);
             if (!reaction) continue;
 
-            await message.removeReaction(reaction.emojiIdentifier);
-            changes++;
+            try {
+                await message.removeReaction(reaction.emojiIdentifier);
+                changes++;
+            } catch (error) {
+                this.reportReactionError('mirror remove', error);
+            }
         }
 
         return changes;
+    }
+
+    private reportReactionError(operation: string, error: unknown): void {
+        if (isTolerableReactionError(error)) {
+            logger.debug(
+                `Reaction sync: ${operation} skipped, target state is gone:`,
+                error
+            );
+            return;
+        }
+
+        logger.warn(`Reaction sync: ${operation} failed:`, error);
     }
 
     private async planReactions(
@@ -476,8 +629,8 @@ export default class ReactionSyncService {
 
         const sourceMappedKeys = new Set(mappedEmojis.map(({ key }) => key));
 
-        // A remove-all on the target side suppresses the current emoji set
-        // (a moderator explicitly cleared the reactions there).
+        // A clear-all on the target side vetoes the current emoji set (a
+        // moderator explicitly cleared the reactions there).
         if (suppressAll) {
             this.suppressions.suppressMany(
                 targetPlatform,
@@ -496,8 +649,9 @@ export default class ReactionSyncService {
         for (const { key, mapped } of mappedEmojis) {
             // A real user on the target already has this emoji: no bot mirror.
             if (targetUserKeys.has(key)) continue;
-            // A user removed the mirror on that side: keep it removed until
-            // the emoji disappears from the source side.
+            // A user removed the mirror on that side: keep it removed while
+            // the emoji remains on the source side (the veto lifts when the
+            // source drops it or a local user re-adds it).
             if (
                 this.suppressions.isSuppressed(
                     targetPlatform,

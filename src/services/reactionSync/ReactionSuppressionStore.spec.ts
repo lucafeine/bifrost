@@ -24,21 +24,17 @@ describe('ReactionSuppressionStore', () => {
         expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(false);
     });
 
-    it('consumes suppressions created before the reconcile cutoff', () => {
+    it('keeps the veto across reconciles while the source still has the emoji', () => {
         const store = new ReactionSuppressionStore();
 
-        store.suppress('discord', 'm1', 'u:🍋', 1_000);
-        store.consume('discord', 'm1', 1_500);
+        store.suppress('discord', 'm1', 'u:🍋');
 
-        expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(false);
-    });
+        store.reconcile('discord', 'm1', new Set(['u:🍋']));
+        expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(true);
 
-    it('keeps suppressions created while the reconcile was running', () => {
-        const store = new ReactionSuppressionStore();
-
-        store.suppress('discord', 'm1', 'u:🍋', 2_000);
-        store.consume('discord', 'm1', 1_500);
-
+        // A later reconcile (triggered by any other event) must not bring the
+        // mirror back either.
+        store.reconcile('discord', 'm1', new Set(['u:🍋']));
         expect(store.isSuppressed('discord', 'm1', 'u:🍋')).toBe(true);
     });
 
