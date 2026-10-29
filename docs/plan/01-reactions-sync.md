@@ -182,6 +182,10 @@ reactions retry inline with the existing `fluxerApiGuard` backoff awareness.
 - The bridge bot's own reaction is excluded from "user reactions" everywhere
   (`count - (me ? 1 : 0)`); without that, the mirror kept its own emoji alive on the
   source and removals never propagated (fixed after live testing).
+- A user removal is respected locally: removing a reaction on a side suppresses the bot
+  mirror for that emoji/message until the emoji disappears from the other side (so the
+  bridge does not force it back on the next reconcile). `removeAll` applies the same
+  suppression to the current emoji set.
 - Echo prevention is belt-and-braces: events authored by the bridge bot are skipped
   (`SyncEchoGuard.isBridgeActor`) and each action reserves an echo key *before* the API
   call.

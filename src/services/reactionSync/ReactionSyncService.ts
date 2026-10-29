@@ -26,6 +26,7 @@ import type { LinkService } from '../LinkService';
 import type MetricsService from '../MetricsService';
 import SyncEchoGuard, { syncEchoGuard } from '../SyncEchoGuard';
 import ReactionCoalescer from './ReactionCoalescer';
+import ReactionSuppressionStore from './ReactionSuppressionStore';
 import {
     diffReactionKeys,
     emojiKeyFromInput,
@@ -150,6 +151,8 @@ export default class ReactionSyncService {
     private readonly bridgeLogService: BridgeLogService | null;
     private readonly echoGuard: Pick<SyncEchoGuard, 'expect' | 'isEcho'>;
     private readonly coalescer: ReactionCoalescer;
+    private readonly suppressions = new ReactionSuppressionStore();
+    private readonly pendingRemoveAll = new Set<string>();
 
     private discordClient: DiscordClient | null = null;
     private fluxerClient: FluxerClient | null = null;
@@ -197,6 +200,20 @@ export default class ReactionSyncService {
                 });
                 return;
             }
+
+            // A real user removed this reaction on this side: do not force the
+            // bot mirror back while the other side still has the emoji.
+            if (event.kind === 'remove' || event.kind === 'removeEmoji') {
+                this.suppressions.suppress(
+                    event.platform,
+                    event.messageId,
+                    emojiKeyFromInput(event.emoji)
+                );
+            }
+        }
+
+        if (event.kind === 'removeAll') {
+            this.pendingRemoveAll.add(`${event.platform}:${event.messageId}`);
         }
 
         this.coalescer.schedule(`${event.platform}:${event.messageId}`);
@@ -207,12 +224,14 @@ export default class ReactionSyncService {
         const platform = key.slice(0, separator) as SyncPlatform;
         const messageId = key.slice(separator + 1);
 
-        await this.reconcile(platform, messageId);
+        const suppressAll = this.pendingRemoveAll.delete(key);
+        await this.reconcile(platform, messageId, suppressAll);
     }
 
     private async reconcile(
         platform: SyncPlatform,
-        messageId: string
+        messageId: string,
+        suppressAll = false
     ): Promise<void> {
         const direction: Direction =
             platform === 'discord' ? 'discord_to_fluxer' : 'fluxer_to_discord';
@@ -256,7 +275,8 @@ export default class ReactionSyncService {
             const changes = await this.reconcilePair(
                 guildLink,
                 channelLink,
-                messageLink
+                messageLink,
+                suppressAll ? platform : null
             );
 
             this.metricsService?.syncEvents.inc({
@@ -288,7 +308,8 @@ export default class ReactionSyncService {
     private async reconcilePair(
         guildLink: GuildLink,
         channelLink: ChannelLink,
-        messageLink: MessageLink
+        messageLink: MessageLink,
+        suppressAllOn: SyncPlatform | null
     ): Promise<number> {
         const [discordMessage, fluxerMessage] = await Promise.all([
             this.discordEntityResolver.fetchMessage(
@@ -320,8 +341,10 @@ export default class ReactionSyncService {
             guildLink.fluxerGuildId,
             'discord',
             guildLink.discordGuildId,
+            discordMessage.id,
             discordUserKeys,
-            discordBotReactions.keys()
+            discordBotReactions.keys(),
+            suppressAllOn === 'discord'
         );
         const fluxerPlan = await this.planReactions(
             discordUserEmojis,
@@ -329,8 +352,10 @@ export default class ReactionSyncService {
             guildLink.discordGuildId,
             'fluxer',
             guildLink.fluxerGuildId,
+            fluxerMessage.id,
             fluxerUserKeys,
-            fluxerBotReactions.keys()
+            fluxerBotReactions.keys(),
+            suppressAllOn === 'fluxer'
         );
 
         let changes = 0;
@@ -418,10 +443,12 @@ export default class ReactionSyncService {
         sourceGuildId: string,
         targetPlatform: SyncPlatform,
         targetGuildId: string,
+        targetMessageId: string,
         targetUserKeys: Set<string>,
-        currentBotKeys: Iterable<string>
+        currentBotKeys: Iterable<string>,
+        suppressAll: boolean
     ): Promise<ReactionPlan> {
-        const desired = new Map<string, MappedEmoji>();
+        const mappedEmojis: { key: string; mapped: MappedEmoji }[] = [];
 
         for (const emoji of sourceEmojis) {
             const mapped = await this.emojiMapper.resolve(
@@ -443,9 +470,42 @@ export default class ReactionSyncService {
                 continue;
             }
 
-            const key = emojiKeyFromMapped(mapped);
+            mappedEmojis.push({ key: emojiKeyFromMapped(mapped), mapped });
+        }
+
+        const sourceMappedKeys = new Set(mappedEmojis.map(({ key }) => key));
+
+        // A remove-all on the target side suppresses the current emoji set
+        // (a moderator explicitly cleared the reactions there).
+        if (suppressAll) {
+            this.suppressions.suppressMany(
+                targetPlatform,
+                targetMessageId,
+                sourceMappedKeys
+            );
+        }
+        this.suppressions.reconcile(
+            targetPlatform,
+            targetMessageId,
+            sourceMappedKeys
+        );
+
+        const desired = new Map<string, MappedEmoji>();
+
+        for (const { key, mapped } of mappedEmojis) {
             // A real user on the target already has this emoji: no bot mirror.
             if (targetUserKeys.has(key)) continue;
+            // A user removed the mirror on that side: keep it removed until
+            // the emoji disappears from the source side.
+            if (
+                this.suppressions.isSuppressed(
+                    targetPlatform,
+                    targetMessageId,
+                    key
+                )
+            ) {
+                continue;
+            }
 
             desired.set(key, mapped);
         }

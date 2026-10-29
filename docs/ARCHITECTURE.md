@@ -65,9 +65,10 @@ Fluxer message ──┘   (normalize, emoji)   └─▶ Discord webhook messag
 reconcile of the paired message (`src/services/reactionSync/`): a 500 ms trailing debounce
 per message, then one fetch of both messages and a reconciliation of the **union of real
 user reactions**. The bot only adds an emoji on a side where no real user has it, so the
-emoji set is identical on both sides without duplicate counts, and removals converge.
-Mirrored reactions are attributed to the bot; only bridge-owned reactions are ever
-removed.
+emoji set is identical on both sides without duplicate counts. Removing a reaction locally
+suppresses that mirror until the emoji disappears from the other side, so a user can get
+rid of a mirrored reaction without it bouncing back. Mirrored reactions are attributed to
+the bot; only bridge-owned reactions are ever removed.
 
 ### Resilience
 - Failed relays are persisted to `queued_messages` and drained every 30 s
