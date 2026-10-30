@@ -221,11 +221,15 @@ export class LinkService {
     }
 
     async getStructureLinkByDiscordChannelId(discordChannelId: string) {
-        return this.structureRepo?.findByDiscordChannelId(discordChannelId) ?? null;
+        return (
+            this.structureRepo?.findByDiscordChannelId(discordChannelId) ?? null
+        );
     }
 
     async getStructureLinkByFluxerChannelId(fluxerChannelId: string) {
-        return this.structureRepo?.findByFluxerChannelId(fluxerChannelId) ?? null;
+        return (
+            this.structureRepo?.findByFluxerChannelId(fluxerChannelId) ?? null
+        );
     }
 
     async getStructureLinksForGuild(guildLinkId: string) {

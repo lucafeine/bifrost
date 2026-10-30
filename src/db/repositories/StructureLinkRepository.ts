@@ -1,4 +1,8 @@
-import { StructureLink, StructureLinkKind, StructureLinkOrigin } from '../entities/StructureLink';
+import {
+    StructureLink,
+    StructureLinkKind,
+    StructureLinkOrigin,
+} from '../entities/StructureLink';
 
 export interface StructureLinkRepository {
     create(params: {
